@@ -6,7 +6,8 @@
 //     way out match the way in (provided the AST hasn't been mutated to break
 //     that). The serializer never reorders attributes, never reallocates
 //     namespace prefixes, never re-emits xmlns declarations on a different
-//     element than where the parser placed them.
+//     element than where the parser placed them. It only adds a declaration
+//     where an element's or attribute's prefix would otherwise be unbound.
 //   - Predictable output for hand-built ASTs. Authoring-time code can assume
 //     the same input element produces the same byte sequence.
 //   - Escape rules tight enough for the reference desktop app to accept the output: the
@@ -21,6 +22,7 @@
 //     someone really wants it, but the round-trip story is cleaner without.
 
 import type { XmlAttr, XmlDocument, XmlElement, XmlNode } from './ast.ts';
+import { NS } from './namespaces.ts';
 
 // XML 1.0 §2.2 excludes C0 controls other than tab / LF / CR, U+FFFE,
 // U+FFFF, and unpaired surrogates. Numeric references cannot rescue them.
@@ -79,13 +81,66 @@ const writeAttr = (a: XmlAttr): string => {
   return ` ${name}="${escapeAttr(a.value)}"`;
 };
 
-const writeElement = (e: XmlElement, parts: string[]): void => {
+// Prefix → URI bindings in scope at the element being written. The root of a
+// document starts with only the reserved `xml` prefix bound.
+type Scope = ReadonlyMap<string, string>;
+
+const DOCUMENT_SCOPE: Scope = new Map([['xml', NS.xml]]);
+
+// Parsed elements carry the declarations their input had, but elements built
+// with `elem(...)` carry none and rely on an ancestor declaring their prefixes.
+// Producers may declare a prefix on the element that uses it rather than on
+// the part root, so that ancestor is not guaranteed; declare whatever the
+// element's own name and attributes need that is not already in scope.
+const missingDecls = (e: XmlElement, scope: Scope): Map<string, string> | null => {
+  let added: Map<string, string> | null = null;
+  for (let i = -1; i < e.attrs.length; i++) {
+    const name = i < 0 ? e.name : e.attrs[i]!.name;
+    // Unprefixed attributes are in no namespace whatever the default is.
+    if (i >= 0 && name.prefix === '') continue;
+    const own = e.prefixDecls.get(name.prefix) ?? added?.get(name.prefix);
+    if (own === undefined) {
+      if ((scope.get(name.prefix) ?? '') === name.namespaceURI) continue;
+      added ??= new Map();
+      added.set(name.prefix, name.namespaceURI);
+    } else if (own !== name.namespaceURI) {
+      throw new Error(
+        `prefix "${name.prefix}" on <${rawName(e.name.prefix, e.name.localName)}> is bound to both ${own} and ${name.namespaceURI}`,
+      );
+    }
+  }
+  return added;
+};
+
+const writeDecls = (decls: ReadonlyMap<string, string>, parts: string[]): void => {
+  for (const [prefix, uri] of decls) {
+    const decl = prefix === '' ? 'xmlns' : `xmlns:${prefix}`;
+    parts.push(` ${decl}="${escapeAttr(uri)}"`);
+  }
+};
+
+const withDecls = (scope: Scope, decls: ReadonlyMap<string, string>): Scope => {
+  if (decls.size === 0) return scope;
+  const next = new Map(scope);
+  for (const [prefix, uri] of decls) next.set(prefix, uri);
+  return next;
+};
+
+// `scope` is null for fragments: their context is unknown, so they are written
+// with exactly the declarations they carry.
+const writeElement = (e: XmlElement, parts: string[], scope: Scope | null): void => {
   const name = rawName(e.name.prefix, e.name.localName);
   parts.push('<');
   parts.push(name);
-  for (const [prefix, uri] of e.prefixDecls) {
-    const decl = prefix === '' ? 'xmlns' : `xmlns:${prefix}`;
-    parts.push(` ${decl}="${escapeAttr(uri)}"`);
+  writeDecls(e.prefixDecls, parts);
+  let childScope = scope;
+  if (scope) {
+    const added = missingDecls(e, scope);
+    childScope = withDecls(scope, e.prefixDecls);
+    if (added) {
+      writeDecls(added, parts);
+      childScope = withDecls(childScope, added);
+    }
   }
   for (const a of e.attrs) parts.push(writeAttr(a));
   if (e.children.length === 0) {
@@ -93,16 +148,16 @@ const writeElement = (e: XmlElement, parts: string[]): void => {
     return;
   }
   parts.push('>');
-  for (const child of e.children) writeNode(child, parts);
+  for (const child of e.children) writeNode(child, parts, childScope);
   parts.push('</');
   parts.push(name);
   parts.push('>');
 };
 
-const writeNode = (n: XmlNode, parts: string[]): void => {
+const writeNode = (n: XmlNode, parts: string[], scope: Scope | null): void => {
   switch (n.kind) {
     case 'element':
-      writeElement(n, parts);
+      writeElement(n, parts, scope);
       return;
     case 'text':
       parts.push(escapeText(n.data));
@@ -135,6 +190,8 @@ const writeNode = (n: XmlNode, parts: string[]): void => {
   }
 };
 
+export const XML_DECLARATION = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
+
 const writeDeclaration = (doc: XmlDocument, parts: string[]): void => {
   if (!doc.decl) return;
   parts.push('<?xml version="');
@@ -163,11 +220,11 @@ export const serializeXml = (
   } else if (options.standaloneDeclaration ?? true) {
     // OOXML parts MUST start with an XML declaration. Add a sensible default
     // when the AST doesn't carry one (typical for hand-built trees).
-    parts.push('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>');
+    parts.push(XML_DECLARATION);
   }
-  for (const p of doc.prolog) writeNode(p, parts);
-  writeElement(doc.root, parts);
-  for (const e of doc.epilog) writeNode(e, parts);
+  for (const p of doc.prolog) writeNode(p, parts, null);
+  writeElement(doc.root, parts, DOCUMENT_SCOPE);
+  for (const e of doc.epilog) writeNode(e, parts, null);
   return parts.join('');
 };
 
@@ -175,7 +232,7 @@ export const serializeXml = (
 // tests and when emitting fragments that get inlined into a larger document.
 export const serializeFragment = (element: XmlElement): string => {
   const parts: string[] = [];
-  writeElement(element, parts);
+  writeElement(element, parts, null);
   return parts.join('');
 };
 
