@@ -188,6 +188,7 @@ import {
   layoutCore,
   measureTextBodyHeight,
   substituteFamily,
+  cssFamilyName,
   type BulletInput,
   type ColumnLayout,
   type ParaInput,
@@ -213,6 +214,10 @@ export type { RenderSlideOptions, TextMeasurer, FontSpec, MeasureResult } from '
 interface LayoutCtx {
   readonly mode: TextLayoutMode;
   readonly measure: TextMeasurer;
+  // Family mapping for text the SVG engine lays out in 'svg' mode, and for the
+  // autofit measurement shared by both modes. foreignObject text always uses
+  // `browserFontFamily`, a CSS stack that keeps the authored name.
+  readonly resolveFamily: (family: string | null) => string;
   // Product of the scale factors of every enclosing group (`<a:ext>` over
   // `<a:chExt>`). Geometry scales with the group; text does not — the reference desktop app
   // and LibreOffice both keep a group child's glyphs at their authored size
@@ -284,6 +289,10 @@ const DEFAULT_TITLE_PT = 44;
 const DEFAULT_FONT = "Calibri, 'Helvetica Neue', Arial, sans-serif";
 const browserFontFamily = (family: string | null): string =>
   family ? `${JSON.stringify(family)}, ${DEFAULT_FONT}` : DEFAULT_FONT;
+// SVG text laid out beside foreignObject HTML (custom tabs, character effects)
+// names its face with the same CSS stack, which is already a valid
+// `font-family` value and is written verbatim.
+const BROWSER_FAMILIES = { resolveFamily: browserFontFamily, familyIsCssList: true } as const;
 // Bullet font when no buFont is authored or inherited. The stock
 // template's master bodyStyle sets buFont="Arial", and its '•'/'◦' glyphs are
 // smaller and higher than the theme minor face (Calibri) — so Arial, not the
@@ -1639,12 +1648,16 @@ export interface SvgTextArgs {
   /** The text body's bevel, shaded over every run's glyphs. */
   readonly bevel?: TextBevelInput | null;
   /** Maps an authored font name onto the family the measurer keys off.
-   *  The render paths leave this unset (= `substituteFamily`, whose output
-   *  must match the bundled TTFs' internal names for resvg). The audit path
+   *  Unset means `substituteFamily`, whose output must match the bundled
+   *  TTFs' internal names for resvg; svg-mode renders pass the host's
+   *  `RenderSlideOptions.resolveFamily` when it has one. The audit path
    *  passes the authored name through so a fontkit measurer with
    *  user-registered fonts can resolve it before falling back to the
    *  substitution map. */
   readonly resolveFamily?: (family: string | null) => string;
+  /** `resolveFamily` returns a CSS font-family list rather than one name, so
+   *  it is written as is instead of being quoted as a single family. */
+  readonly familyIsCssList?: boolean;
 }
 
 // Runs whose glyphs the SVG fill layer paints — a non-solid fill or a
@@ -1726,6 +1739,15 @@ const smallCapsParts = (
   return parts;
 };
 
+// The face a piece or bullet is measured and written with.
+const faceOf = (
+  a: SvgTextArgs,
+  font: string | null,
+): { readonly family: string; readonly cssFamily?: string } => {
+  const family = (a.resolveFamily ?? substituteFamily)(font);
+  return a.familyIsCssList ? { family } : { family, cssFamily: cssFamilyName(family) };
+};
+
 // Build the px-native engine input from the resolved paraData (at a.autoFitScale).
 export const buildSvgTextInput = (a: SvgTextArgs): TextBodyInput => {
   const scale = a.autoFitScale;
@@ -1736,7 +1758,7 @@ export const buildSvgTextInput = (a: SvgTextArgs): TextBodyInput => {
       if (run.text === '\n') {
         pieces.push({
           ...breakPiece(),
-          family: (a.resolveFamily ?? substituteFamily)(run.fmt?.font ?? a.themeFace),
+          ...faceOf(a, run.fmt?.font ?? a.themeFace),
           sizePx: run.sizePt * scale * PX_PER_PT,
           bold: run.fmt?.bold ?? false,
           italic: run.fmt?.italic ?? false,
@@ -1755,7 +1777,7 @@ export const buildSvgTextInput = (a: SvgTextArgs): TextBodyInput => {
           underline: fmt?.underline ?? true,
         };
       }
-      const family = (a.resolveFamily ?? substituteFamily)(fmt?.font ?? a.themeFace);
+      const face = faceOf(a, fmt?.font ?? a.themeFace);
       const sizePx = run.sizePt * scale * PX_PER_PT;
       const fillHex =
         fmt?.color !== undefined && fmt.color !== null
@@ -1772,7 +1794,7 @@ export const buildSvgTextInput = (a: SvgTextArgs): TextBodyInput => {
       const cap = fmt?.cap;
       const caps = cap === 'all' || cap === 'small';
       const base: Omit<PieceInput, 'text' | 'isBreak'> = {
-        family,
+        ...face,
         sizePx,
         bold: fmt?.bold ?? false,
         italic: fmt?.italic ?? false,
@@ -1999,7 +2021,7 @@ const buildBullet = (a: SvgTextArgs, para: ParaData, pi: number): BulletInput | 
     : (para.bulletDetail.font ?? DEFAULT_BULLET_FONT);
   return {
     text: char,
-    family: (a.resolveFamily ?? substituteFamily)(bulletFont),
+    ...faceOf(a, bulletFont),
     sizePx,
     fillHex,
     ...(para.bulletImageHref ? { imageHref: para.bulletImageHref } : {}),
@@ -2065,6 +2087,7 @@ export const resolveTextBodyModel = (
   measure: TextMeasurer,
   defaultColor: string,
   useSvgTextRect = false,
+  resolveFamily: (family: string | null) => string = substituteFamily,
 ): TextBodyModel | null => {
   let paragraphCount: number;
   try {
@@ -2376,6 +2399,7 @@ export const resolveTextBodyModel = (
       measure,
       vert: fitVert,
       columns: fitColumns,
+      resolveFamily,
     };
     let s = 1;
     while (s > AUTOFIT_FLOOR) {
@@ -2414,6 +2438,7 @@ export const resolveTextBodyModel = (
       measure,
       vert,
       autoFitScale,
+      resolveFamily,
       columns:
         vert === 'none' && cols && cols.count >= 2
           ? { count: cols.count, gapPx: cols.gapEmu !== undefined ? cols.gapEmu / EMU_PER_PX : 0 }
@@ -2672,6 +2697,7 @@ const renderTextBody = (
     ctx.measure,
     activeDeckTextColor,
     ctx.mode === 'svg' && output === 'body',
+    ctx.resolveFamily,
   );
   if (model === null) return '';
   const bevel = textBevelOf(getShapeText3D(shape));
@@ -2753,7 +2779,7 @@ const renderTextBody = (
       innerW: vInnerW,
       innerH: vInnerH,
       measure: ctx.mode === 'svg' ? ctx.measure : (browserTextMeasurer() ?? ctx.measure),
-      ...(ctx.mode === 'foreignObject' ? { resolveFamily: browserFontFamily } : {}),
+      ...(ctx.mode === 'foreignObject' ? BROWSER_FAMILIES : { resolveFamily: ctx.resolveFamily }),
       vert: svgVert,
       columns: svgColumns,
       bevel,
@@ -2763,7 +2789,7 @@ const renderTextBody = (
         ...svgArgsBase,
         autoFitScale: authoredAutofit ? autoFitScale : 1,
         effectsOnly: true,
-        resolveFamily: browserFontFamily,
+        ...BROWSER_FAMILIES,
       };
       const effects = [
         paraData.some((para) => para.runs.some((run) => run.fmt?.reflection != null))
@@ -2872,7 +2898,7 @@ const renderTextBody = (
       vert: svgVert,
       columns: null,
       effectsOnly: true,
-      resolveFamily: browserFontFamily,
+      ...BROWSER_FAMILIES,
       bevel,
     };
     const hasCharacterReflection = paraData.some((para) =>
@@ -2938,6 +2964,7 @@ export const renderTextEffectsSvg = (
     groupReflected: false,
     mode: 'foreignObject',
     measure: opts.measureText ?? browserTextMeasurer() ?? defaultMeasurer,
+    resolveFamily: substituteFamily,
     ownShapes: true,
     background: { id: '', width: localBounds.w / EMU_PER_PX, height: localBounds.h / EMU_PER_PX },
     inverseGroupTransform: '',
@@ -2978,6 +3005,7 @@ const renderTableCellEffectsSvgInternal = (
     groupReflected: false,
     mode: 'foreignObject',
     measure: opts.measureText ?? browserTextMeasurer() ?? defaultMeasurer,
+    resolveFamily: substituteFamily,
     ownShapes: true,
     background: { id: '', width: localBounds.w / EMU_PER_PX, height: localBounds.h / EMU_PER_PX },
     inverseGroupTransform: '',
@@ -5695,7 +5723,7 @@ const renderTableCellText = (
     innerW: innerW * EMU_PER_PX,
     innerH: innerH * EMU_PER_PX,
     measure: ctx.mode === 'svg' ? ctx.measure : (browserTextMeasurer() ?? ctx.measure),
-    ...(ctx.mode === 'foreignObject' ? { resolveFamily: browserFontFamily } : {}),
+    ...(ctx.mode === 'foreignObject' ? BROWSER_FAMILIES : { resolveFamily: ctx.resolveFamily }),
     vert: verticalLayoutOf(getTableCellTextDirection(cell)),
     columns: null,
     ...(effectsOnly ? { effectsOnly: true } : {}),
@@ -7093,6 +7121,10 @@ const renderSurface = (
     groupReflected: false,
     mode: opts.textLayout ?? 'foreignObject',
     measure: opts.measureText ?? defaultMeasurer,
+    // The host's mapping is svg-only, so foreignObject output (including its
+    // autofit, measured with the SVG engine) never depends on it.
+    resolveFamily:
+      opts.textLayout === 'svg' ? (opts.resolveFamily ?? substituteFamily) : substituteFamily,
     ownShapes: true,
     background: { id: '', width: W / EMU_PER_PX, height: H / EMU_PER_PX },
     inverseGroupTransform: '',
