@@ -113,8 +113,15 @@ export const serializeContentTypes = (ct: ContentTypes): string => {
   return serializeXml(doc);
 };
 
+// Lowercased extension a Default would match, or null when there is none.
+const defaultKeyOf = (name: PartName): string | null => {
+  const file = basename(name);
+  const dot = file.lastIndexOf('.');
+  return dot < 0 ? null : file.slice(dot + 1).toLowerCase();
+};
+
 /**
- * Resolves the content type for a given part name.
+ * Builds a resolver for many part names against one `ContentTypes`.
  *
  *   1. The first Override whose PartName matches case-insensitively wins.
  *   2. Otherwise, the first Default whose Extension matches the part's
@@ -122,15 +129,38 @@ export const serializeContentTypes = (ct: ContentTypes): string => {
  *   3. Returns `null` if neither rule matches — `[Content_Types].xml` is
  *      required to cover every part, so a null here indicates a malformed
  *      package.
+ *
+ * The resolver snapshots `ct`; later edits to it are not reflected.
+ */
+export const contentTypeResolver = (ct: ContentTypes): ((name: PartName) => string | null) => {
+  const overrides = new Map<string, string>();
+  for (const o of ct.overrides) {
+    const key = o.partName.toLowerCase();
+    if (!overrides.has(key)) overrides.set(key, o.contentType);
+  }
+  const defaults = new Map<string, string>();
+  for (const d of ct.defaults) {
+    const key = d.extension.toLowerCase();
+    if (!defaults.has(key)) defaults.set(key, d.contentType);
+  }
+  return (name) => {
+    const override = overrides.get(name.toLowerCase());
+    if (override !== undefined) return override;
+    const ext = defaultKeyOf(name);
+    return ext === null ? null : (defaults.get(ext) ?? null);
+  };
+};
+
+/**
+ * Resolves the content type of one part name by the rules of
+ * `contentTypeResolver`, scanning without building maps.
  */
 export const lookupContentType = (ct: ContentTypes, name: PartName): string | null => {
   for (const o of ct.overrides) {
     if (partNamesEqual(o.partName, name)) return o.contentType;
   }
-  const file = basename(name);
-  const dot = file.lastIndexOf('.');
-  if (dot < 0) return null;
-  const ext = file.slice(dot + 1).toLowerCase();
+  const ext = defaultKeyOf(name);
+  if (ext === null) return null;
   for (const d of ct.defaults) {
     if (d.extension.toLowerCase() === ext) return d.contentType;
   }

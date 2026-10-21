@@ -20,6 +20,7 @@ import {
   type PartName,
   type Relationships,
   type ZipEntry,
+  contentTypeResolver,
   emptyContentTypes,
   fromZipPath,
   lookupContentType,
@@ -70,17 +71,31 @@ const CONTENT_TYPES_PART = '[Content_Types].xml';
 export class OpcPackage {
   /**
    * Ordered list of parts. The order is the order parts will be written to
-   * the ZIP central directory on `save()`. Direct mutation is allowed for
-   * callers that need to reorder, but `addPart` / `removePart` /
-   * `retainParts` are the supported entry points.
+   * the ZIP central directory on `save()`. Read-only so every change goes
+   * through `addPart` / `removePart` / `retainParts`, which keep the name
+   * index in sync.
    */
-  readonly parts: Part[];
+  get parts(): readonly Part[] {
+    return this.partList;
+  }
+  private readonly partList: Part[];
   /** Mutable Content_Types map. Direct mutation is allowed. */
   contentTypes: ContentTypes;
+  /** Lowercased part name → first part with that name, for `getPart`. */
+  private readonly partsByName = new Map<string, Part>();
 
   private constructor(parts: Part[], contentTypes: ContentTypes) {
-    this.parts = parts;
+    this.partList = parts;
     this.contentTypes = contentTypes;
+    this.indexParts();
+  }
+
+  private indexParts(): void {
+    this.partsByName.clear();
+    for (const part of this.parts) {
+      const key = part.name.toLowerCase();
+      if (!this.partsByName.has(key)) this.partsByName.set(key, part);
+    }
   }
 
   /**
@@ -127,8 +142,9 @@ export class OpcPackage {
       throw new Error('package is missing [Content_Types].xml');
     }
 
+    const resolveContentType = contentTypeResolver(contentTypes);
     for (const part of parts) {
-      const ct = lookupContentType(contentTypes, part.name);
+      const ct = resolveContentType(part.name);
       if (ct === null) {
         throw new Error(
           `part "${part.name}" has no content type registered in [Content_Types].xml`,
@@ -157,10 +173,7 @@ export class OpcPackage {
    * Looks up a part by name (case-insensitive per OPC §9.1.1.7).
    */
   getPart(name: PartName): Part | null {
-    for (const p of this.parts) {
-      if (partNamesEqual(p.name, name)) return p;
-    }
-    return null;
+    return this.partsByName.get(name.toLowerCase()) ?? null;
   }
 
   /**
@@ -173,7 +186,8 @@ export class OpcPackage {
       throw new Error(`part "${name}" already exists`);
     }
     const part: Part = { name, contentType, data };
-    this.parts.push(part);
+    this.partList.push(part);
+    this.partsByName.set(name.toLowerCase(), part);
     // If neither an existing default nor an existing override covers this
     // content type, register an Override so the on-disk Content_Types stays
     // consistent. Callers can replace the override later if they prefer a
@@ -192,14 +206,15 @@ export class OpcPackage {
    */
   removePart(name: PartName): boolean {
     let removed = false;
-    for (let i = this.parts.length - 1; i >= 0; i--) {
-      const p = this.parts[i];
+    for (let i = this.partList.length - 1; i >= 0; i--) {
+      const p = this.partList[i];
       if (p && partNamesEqual(p.name, name)) {
-        this.parts.splice(i, 1);
+        this.partList.splice(i, 1);
         removed = true;
       }
     }
     if (removed) {
+      this.partsByName.delete(name.toLowerCase());
       this.contentTypes.overrides = this.contentTypes.overrides.filter(
         (o) => !partNamesEqual(o.partName, name),
       );
@@ -215,12 +230,13 @@ export class OpcPackage {
   retainParts(keep: (part: Part) => boolean): PartName[] {
     const removed: PartName[] = [];
     let kept = 0;
-    for (const part of this.parts) {
-      if (keep(part)) this.parts[kept++] = part;
+    for (const part of this.partList) {
+      if (keep(part)) this.partList[kept++] = part;
       else removed.push(part.name);
     }
-    this.parts.length = kept;
+    this.partList.length = kept;
     if (removed.length > 0) {
+      this.indexParts();
       const gone = new Set(removed.map((name) => name.toLowerCase()));
       this.contentTypes.overrides = this.contentTypes.overrides.filter(
         (o) => !gone.has(o.partName.toLowerCase()),
