@@ -588,15 +588,14 @@ const seriesElement = (
   )) {
     children.push(dPt);
   }
-  // Without the series-level show* group, LibreOffice treats the missing
-  // toggles as on and paints every label kind on the points that have no
-  // override — so per-point labels require the series defaults.
-  if (series.pointDataLabels !== undefined && series.dataLabels === undefined) {
-    throw new Error(
-      `chart: series '${series.name}' sets pointDataLabels without dataLabels; add the series-level dataLabels the overrides fall back to`,
-    );
-  }
-  const serDLbls = buildDLblsFromLabels(series.dataLabels, series.pointDataLabels);
+  // A series <c:dLbls> replaces the chart-level group for its other points,
+  // and LibreOffice reads missing show* toggles as on, so per-point labels
+  // carry the chart-level toggles (or all-hidden ones) explicitly.
+  const serDLbls = buildDLblsFromLabels(
+    series.dataLabels ??
+      (series.pointDataLabels !== undefined ? (spec.dataLabels ?? HIDDEN_DATA_LABELS) : undefined),
+    series.pointDataLabels,
+  );
   if (serDLbls !== null) children.push(serDLbls);
   // <c:trendline> exists on CT_BarSer/LineSer/AreaSer/ScatterSer/BubbleSer but
   // NOT on CT_PieSer (pie/doughnut) or CT_RadarSer — emitting it there is
@@ -766,12 +765,16 @@ const catAxis = (spec: ChartSpec): XmlElement => {
       }),
     );
   }
-  if (spec.categoryAxisMajorTickMark !== undefined) {
-    children.push(valNode(c('majorTickMark'), spec.categoryAxisMajorTickMark));
-  }
-  if (spec.categoryAxisMinorTickMark !== undefined) {
-    children.push(valNode(c('minorTickMark'), spec.categoryAxisMinorTickMark));
-  }
+  // Apps differ on an absent tick mark element (the schema default is
+  // `cross`), so the intended defaults are always written out.
+  children.push(
+    valNode(
+      c('majorTickMark'),
+      spec.categoryAxisMajorTickMark ??
+        (spec.kind === 'bar' || spec.kind === 'column' ? 'none' : 'out'),
+    ),
+    valNode(c('minorTickMark'), spec.categoryAxisMinorTickMark ?? 'none'),
+  );
   if (spec.categoryAxisTickLabelPos !== undefined) {
     children.push(valNode(c('tickLblPos'), spec.categoryAxisTickLabelPos));
   }
@@ -916,12 +919,11 @@ const valueAxisElement = (
       }),
     );
   }
-  if (f.majorTickMark !== undefined) {
-    children.push(valNode(c('majorTickMark'), f.majorTickMark));
-  }
-  if (f.minorTickMark !== undefined) {
-    children.push(valNode(c('minorTickMark'), f.minorTickMark));
-  }
+  // Absent means `cross`; see `catAxis`.
+  children.push(
+    valNode(c('majorTickMark'), f.majorTickMark ?? 'out'),
+    valNode(c('minorTickMark'), f.minorTickMark ?? 'none'),
+  );
   if (f.tickLabelPos !== undefined) {
     children.push(valNode(c('tickLblPos'), f.tickLabelPos));
   }
@@ -1068,6 +1070,8 @@ const serAxis = (spec: ChartSpec): XmlElement => {
   ];
   if (s.majorGridlines) children.push(elem(c('majorGridlines')));
   if (s.title !== undefined) children.push(titleElement(s.title, s.titleStyle));
+  // Absent means `cross`; see `catAxis`.
+  children.push(valNode(c('majorTickMark'), 'out'), valNode(c('minorTickMark'), 'none'));
   if (s.tickLabelPos !== undefined) children.push(valNode(c('tickLblPos'), s.tickLabelPos));
   const line = lineSpPr(s.lineColor, undefined, 'chart: seriesAxis');
   if (line !== null) children.push(line);
@@ -1076,6 +1080,13 @@ const serAxis = (spec: ChartSpec): XmlElement => {
   children.push(valNode(c('crossAx'), VAL_AX_ID));
   if (s.tickLabelSkip !== undefined) children.push(valNode(c('tickLblSkip'), s.tickLabelSkip));
   return elem(c('serAx'), { children });
+};
+
+const HIDDEN_DATA_LABELS: ChartDataLabels = {
+  showValue: false,
+  showCategory: false,
+  showSeriesName: false,
+  showPercent: false,
 };
 
 // Build `<c:dLbls>` from a ChartDataLabels (showVal / showCatName /
@@ -1096,7 +1107,9 @@ const buildDLblsFromLabels = (
         children: [
           valNode(c('idx'), i),
           // CT_DLbl only: a literal <c:tx> sits between idx and the shared group.
-          ...(pl.text !== undefined ? [elem(c('tx'), { children: [richText(pl.text)] })] : []),
+          ...(pl.text !== undefined
+            ? [elem(c('tx'), { children: [richText(pl.text, pl.textStyle)] })]
+            : []),
           ...dLblGroupChildren(pl),
         ],
       }),
@@ -1636,17 +1649,23 @@ const manualLayoutElement = (
     ],
   });
 
-// A one-run `<c:rich>` body with no formatting of its own.
-const richText = (value: string): XmlElement =>
-  elem(c('rich'), {
+// A one-run `<c:rich>` body. Literal label text ignores the label's
+// `<c:txPr>`, so the style goes on the paragraph defaults and the run.
+const richText = (value: string, style: ChartTextStyle | undefined): XmlElement => {
+  const run = elem(a('r'), {
     children: [
-      elem(a('bodyPr')),
-      elem(a('lstStyle')),
-      elem(a('p'), {
-        children: [elem(a('r'), { children: [elem(a('t'), { children: [text(value)] })] })],
-      }),
+      ...(style !== undefined ? [elem(a('rPr'), rPrAttrsFromStyle(style))] : []),
+      elem(a('t'), { children: [text(value)] }),
     ],
   });
+  const pPr =
+    style !== undefined
+      ? [elem(a('pPr'), { children: [elem(a('defRPr'), rPrAttrsFromStyle(style))] })]
+      : [];
+  return elem(c('rich'), {
+    children: [elem(a('bodyPr')), elem(a('lstStyle')), elem(a('p'), { children: [...pPr, run] })],
+  });
+};
 
 const titleElement = (
   title: string,

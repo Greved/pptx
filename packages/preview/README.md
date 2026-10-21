@@ -117,7 +117,7 @@ const measureText = buildFontkitMeasurer({
 });
 
 const issues = auditTextLayout(pres, { measureText, reportSoftWraps: true });
-// → [{ kind: 'overflow-y', slideIndex: 2, shapeName: 'Title 1', overflowPx: 14.3, approximate: false }, …]
+// → [{ kind: 'overflow-y', slideIndex: 2, shapeName: 'Title 1', overflowPx: 14.3, shapeOverflowPx: 9.5, lineHeightPx: 52.8, approximate: false }, …]
 ```
 
 `auditTextLayout` measures every shape's text body — placeholders, text boxes,
@@ -125,11 +125,20 @@ autoshapes, shapes inside groups — with the same engine the preview renders
 with, honouring the effective bodyPr cascade (insets, wrap, anchor, vertical
 text, columns) and `normAutofit` shrinking. It returns one issue per finding:
 
-| `kind`       | Meaning                                                                       | Extra fields                   |
-| ------------ | ----------------------------------------------------------------------------- | ------------------------------ |
-| `overflow-x` | Text ink escapes the box horizontally (typically `wrap="none"`)               | `overflowPx`                   |
-| `overflow-y` | Wrapped text is taller than the box (or escapes the top when bottom-anchored) | `overflowPx`                   |
-| `soft-wrap`  | A paragraph wrapped onto more lines than its authored `<a:br>` count (段落ち) | `paragraphIndex`, `extraLines` |
+| `kind`            | Meaning                                                                             | Extra fields                   |
+| ----------------- | ----------------------------------------------------------------------------------- | ------------------------------ |
+| `overflow-x`      | Text ink escapes the box horizontally (typically `wrap="none"`)                     | `overflowPx` and the two below |
+| `overflow-y`      | Wrapped text is taller than the box (or escapes the top when bottom-anchored)       | `overflowPx` and the two below |
+| `soft-wrap`       | A paragraph wrapped onto more lines than its authored `<a:br>` count (段落ち)       | `paragraphIndex`, `extraLines` |
+| `word-break`      | A wrap split a word (Latin / Greek / Cyrillic letters or digits, or a katakana run) | `paragraphIndex`, `text`       |
+| `short-last-line` | A wrapped paragraph ends on a line of one or two characters (泣き別れ)              | `paragraphIndex`, `text`       |
+| `small-font`      | The shape draws text below `minFontSizePt`, after autofit shrinking                 | `sizePt`                       |
+
+`overflowPx` is measured against the text area (the box minus its insets);
+`shapeOverflowPx` is how much ink lies outside the shape itself, both sides
+added (a centre-anchored body spills above and below; 0 while the spill stays
+inside the insets, where nobody sees it); `lineHeightPx` is the
+tallest line's height, about how far one misjudged wrap moves the text.
 
 Every issue also carries `slideIndex`, `shapeName`, and `approximate` —
 `true` when a width had to be estimated (the heuristic measurer, or glyphs the
@@ -146,6 +155,13 @@ Options:
 - `reportSoftWraps` — opt into `soft-wrap` issues. Off by default because
   wrapping is normal for body text; turn it on when auditing titles or labels
   meant to stay on one line.
+- `reportBadWraps` — opt into `word-break` and `short-last-line` issues
+  (horizontal text only). A word inside a kanji compound cannot be told apart
+  from its neighbours, so only the scripts listed above are checked.
+  A `word-break` issue is reported once per word; its `text` is the word with
+  `|` at each line break. `short-last-line` counts characters, not words, so a
+  Latin last line of `to` is reported and one of `the` is not.
+- `minFontSizePt` — report `small-font` for shapes with text below this size.
 
 Accuracy: the bundled fonts are metric-compatible with the common default fonts, so
 verdicts for Calibri / Cambria / Arial / Times / Courier decks match real glyph

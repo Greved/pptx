@@ -15,7 +15,9 @@ import {
   groupShapes,
   loadPresentation,
   inches,
+  setShapeTextAnchor,
   setShapeTextAutoFit,
+  setShapeTextFormat,
   setShapeTextWrap,
 } from '../src/api/index.ts';
 import { auditTextLayout, type TextAuditIssue } from '../packages/preview/src/index.ts';
@@ -67,6 +69,32 @@ describe('auditTextLayout — overflow', () => {
     expect(oy).toBeDefined();
     expect(oy!.kind === 'overflow-y' && oy!.overflowPx).toBeGreaterThan(1);
     expect(oy!.approximate).toBe(false);
+    // Top-anchored, so the ink leaves the shape 0.05in (4.8px, the bottom inset) later.
+    if (oy!.kind === 'overflow-y') {
+      expect(oy!.shapeOverflowPx).toBeCloseTo(oy!.overflowPx - 4.8, 1);
+      expect(oy!.lineHeightPx).toBeGreaterThan(20);
+    }
+  });
+
+  it('adds up the spill above and below a centre-anchored body', async () => {
+    const { pres, slide } = await blankSlide();
+    const box = addSlideTextBox(slide, {
+      x: inches(1),
+      y: inches(1),
+      w: inches(2),
+      h: inches(0.5),
+      text: LONG_PARAGRAPH,
+      name: 'centred',
+    });
+    setShapeTextAnchor(box, 'center');
+    const oy = ofShape(auditTextLayout(pres, { measureText }), 'centred').find(
+      (i) => i.kind === 'overflow-y',
+    );
+    expect(oy?.kind).toBe('overflow-y');
+    // The ink leaves the shape on both sides, each 4.8px (the inset) past the text area.
+    if (oy?.kind === 'overflow-y') {
+      expect(oy.shapeOverflowPx).toBeGreaterThan(1.5 * (oy.overflowPx - 4.8));
+    }
   });
 
   it('audits a group child exactly once (flattened list is not re-recursed)', async () => {
@@ -191,6 +219,87 @@ describe('auditTextLayout — soft wraps (段落ち)', () => {
     expect(
       ofShape(auditTextLayout(pres, { measureText, reportSoftWraps: true }), 'authored-breaks'),
     ).toEqual([]);
+  });
+});
+
+describe('auditTextLayout — line breaks and font size', () => {
+  const box = async (text: string, widthIn: number) => {
+    const { pres, slide } = await blankSlide();
+    const shape = addSlideTextBox(slide, {
+      x: inches(1),
+      y: inches(1),
+      w: inches(widthIn),
+      h: inches(5),
+      text,
+      name: 'box',
+    });
+    return { pres, shape };
+  };
+  const lineIssues = (pres: Parameters<typeof auditTextLayout>[0]) =>
+    ofShape(auditTextLayout(pres, { measureText, reportBadWraps: true }), 'box');
+
+  it('reports a Latin word split across several lines once', async () => {
+    const { pres } = await box('Internationalization', 0.6);
+    const splits = lineIssues(pres).filter((i) => i.kind === 'word-break');
+    expect(splits).toHaveLength(1);
+    const text = splits[0]!.kind === 'word-break' ? splits[0]!.text : '';
+    expect(text.split('|').length).toBeGreaterThan(2);
+    expect(text.replaceAll('|', '')).toBe('Internationalization');
+  });
+
+  it('reports a katakana word split across lines', async () => {
+    const { pres } = await box('今期はカスタマーサクセスの体制を見直します', 1.5);
+    const splits = lineIssues(pres).filter((i) => i.kind === 'word-break');
+    expect(splits).toHaveLength(1);
+    const text = splits[0]!.kind === 'word-break' ? splits[0]!.text : '';
+    expect(text).toBe('カス|タマーサク|セス');
+  });
+
+  it('breaks an overlong word after its hyphens and slashes', async () => {
+    const hyphens = await box('state-of-the-art well-known end-to-end', 1.2);
+    expect(lineIssues(hyphens.pres)).toEqual([]);
+    const url = await box('See https://example.com/a/very/long/path/name for details', 2);
+    expect(lineIssues(url.pres).filter((i) => i.kind === 'word-break')).toEqual([]);
+  });
+
+  it('does not report wraps at spaces or authored breaks', async () => {
+    const { pres } = await box(LONG_PARAGRAPH, 2);
+    expect(lineIssues(pres)).toEqual([]);
+    const authored = await box('first line\nsecond line', 4);
+    expect(lineIssues(authored.pres)).toEqual([]);
+  });
+
+  it('reports a wrapped paragraph that ends on one or two characters', async () => {
+    const { pres } = await box('ああああああああああああああああす。', 4.25);
+    const issues = lineIssues(pres).filter((i) => i.kind === 'short-last-line');
+    expect(issues).toHaveLength(1);
+    expect(issues[0]!.kind === 'short-last-line' && issues[0]!.text).toBe('す。');
+  });
+
+  it('is off unless opted in', async () => {
+    const { pres } = await box('Internationalization', 1);
+    expect(ofShape(auditTextLayout(pres, { measureText }), 'box')).toEqual([]);
+  });
+
+  it('reports text below the minimum size', async () => {
+    const { pres, shape } = await box('Footnote', 4);
+    setShapeTextFormat(shape, { size: 9 });
+    const audit = (minFontSizePt: number) =>
+      ofShape(auditTextLayout(pres, { measureText, minFontSizePt }), 'box');
+    expect(audit(10)).toEqual([
+      { slideIndex: 0, shapeName: 'box', approximate: false, kind: 'small-font', sizePt: 9 },
+    ]);
+    expect(audit(9)).toEqual([]);
+  });
+
+  it('judges the size after autofit shrinking', async () => {
+    const { pres, shape } = await box(LONG_PARAGRAPH.repeat(12), 2);
+    setShapeTextFormat(shape, { size: 12 });
+    const audit = () => ofShape(auditTextLayout(pres, { measureText, minFontSizePt: 12 }), 'box');
+    expect(audit().filter((i) => i.kind === 'small-font')).toEqual([]);
+    setShapeTextAutoFit(shape, 'normal');
+    const [small] = audit().filter((i) => i.kind === 'small-font');
+    expect(small?.kind === 'small-font' && small.sizePt).toBeLessThan(12);
   });
 });
 

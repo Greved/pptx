@@ -226,3 +226,73 @@ test('the documented TSX agenda builds without Raw or invented components', asyn
   for (const title of ['目次', '前提', '課題', '解決策'])
     assert.match(result.slideTexts[0], new RegExp(title));
 });
+
+test('check does not fail text that only spills into its box insets', async () => {
+  // Its bottom-anchored two-line titles reach about 1.5px into the 0.05in top inset.
+  const example = fileURLToPath(new URL('../../dsl/examples/board-deck.tsx', import.meta.url));
+  const { stdout } = await execute(process.execPath, [cli, 'check', example]);
+  assert.match(stdout, /^0 error\(s\)/m);
+});
+
+test('check passes the starter deck and fails text that overflows or is too small', async (t) => {
+  const directory = await fixture(t);
+  const project = await initProject(join(directory, 'slides'));
+  await symlink(devModules, join(project, 'node_modules'), 'dir');
+  const manifest = JSON.parse(await readFile(join(project, 'package.json'), 'utf8'));
+  assert.equal(manifest.scripts.check, 'tsc --noEmit && office-pptx check deck.tsx');
+  const passed = await execute(process.execPath, [cli, 'check', join(project, 'deck.tsx')]);
+  assert.match(passed.stdout, /^0 error\(s\), 0 warning\(s\)/m);
+
+  const deck = join(directory, 'deck.tsx');
+  await writeFile(
+    deck,
+    `import { Presentation, Shape, Slide, Text } from '@office-kit/pptx-dsl';
+export default <Presentation><Slide>
+  <Text name="Crowded" x={1} y={1} width={2} height={0.4} size={18}>${'word '.repeat(30)}</Text>
+  <Text name="Note" x={1} y={3} width={4} height={1} size={8}>Footnote</Text>
+  <Text name="Split" x={1} y={5} width={1} height={2} size={18}>Internationalization</Text>
+  <Text name="JP" x={5} y={1} width={2} height={0.4} size={18}>${'売上は前年比で大きく伸びましたが利益率は低下しました。'.repeat(3)}</Text>
+  <Shape name="Card" preset="rect" fill="#DDEEFF" x={5} y={3} width={3} height={0.55} text={'売上は前年比で大きく伸びましたが利益率は低下しました。'} />
+</Slide></Presentation>;`,
+  );
+  const failed = await execute(process.execPath, [cli, 'check', deck]).then(
+    () => assert.fail('check should exit with 1'),
+    (error) => error,
+  );
+  assert.equal(failed.code, 1);
+  assert.match(
+    failed.stdout,
+    /^error: Slide 1, "Crowded": text runs [\d.]+px past the top or bottom/m,
+  );
+  // Estimated (Japanese) widths still fail once the text runs lines past its box.
+  assert.match(
+    failed.stdout,
+    /^error: Slide 1, "JP": text runs [\d.]+px past the top or bottom of its shape \(estimated width\)$/m,
+  );
+  // A centred body spills both ways; the two sides add up.
+  assert.match(
+    failed.stdout,
+    /^error: Slide 1, "Card": text runs [\d.]+px past the top or bottom of its shape \(estimated width\)$/m,
+  );
+  assert.match(failed.stdout, /^warning: Slide 1, "Note": text at 8pt is below 10pt$/m);
+  assert.match(failed.stdout, /^warning: Slide 1, "Split": paragraph 1 breaks the word "Intern/m);
+  const relaxed = await execute(process.execPath, [
+    cli,
+    'check',
+    deck,
+    '--min-font-size',
+    '8',
+  ]).catch((error) => error);
+  assert.doesNotMatch(relaxed.stdout, /"Note"/);
+  for (const size of ['0', 'ten']) {
+    const rejected = await execute(process.execPath, [
+      cli,
+      'check',
+      deck,
+      '--min-font-size',
+      size,
+    ]).catch((error) => error);
+    assert.equal(rejected.code, 1);
+    assert.match(rejected.stderr, /Minimum font size must be a positive number/);
+  }
+});

@@ -4,18 +4,25 @@ import { exportDeck } from './index.ts';
 import { serveDeck } from './server.ts';
 import { initProject } from './init.ts';
 import { inspectTemplate } from './inspect.ts';
+import { checkDeck, DEFAULT_MIN_FONT_SIZE_PT } from './check.ts';
 
 const usage = `Usage: office-pptx init <new-directory>
        office-pptx dev <deck.tsx> [--port 4173]
        office-pptx build <deck.tsx> [--out deck.pptx]
+       office-pptx check <deck.tsx> [--min-font-size ${DEFAULT_MIN_FONT_SIZE_PT}]
        office-pptx inspect <template.pptx>`;
+const OPTIONS = new Map<string | undefined, string>([
+  ['build', '--out'],
+  ['dev', '--port'],
+  ['check', '--min-font-size'],
+]);
 const [command, entry, ...args] = process.argv.slice(2);
 try {
   if (command === '--help' || command === '-h') {
     console.log(usage);
   } else {
     if (!entry) throw new Error(usage);
-    const option = command === 'build' ? '--out' : command === 'dev' ? '--port' : undefined;
+    const option = OPTIONS.get(command);
     if (args.length && (args.length !== 2 || !option || args[0] !== option || !args[1])) {
       throw new Error(`Unexpected arguments: ${args.join(' ')}\n${usage}`);
     }
@@ -30,6 +37,17 @@ try {
       const output = resolve(args[1] ?? 'deck.pptx');
       const result = await exportDeck(entry, output);
       console.log(`Wrote ${output} (${result.slides.length} slides)`);
+    } else if (command === 'check') {
+      const minFontSizePt = args[1] === undefined ? undefined : Number(args[1]);
+      if (minFontSizePt !== undefined && !(minFontSizePt > 0))
+        throw new Error('Minimum font size must be a positive number of points.');
+      const findings = await checkDeck(entry, minFontSizePt);
+      for (const finding of findings) console.log(`${finding.severity}: ${finding.message}`);
+      const errors = findings.filter((finding) => finding.severity === 'error').length;
+      console.log(
+        `${errors} error(s), ${findings.length - errors} warning(s) in the slide text layout.`,
+      );
+      if (errors > 0) process.exitCode = 1;
     } else if (command === 'dev') {
       const port = args[1] === undefined ? 4173 : Number(args[1]);
       if (!Number.isInteger(port) || port < 0 || port > 65535)

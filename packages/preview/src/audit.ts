@@ -52,8 +52,13 @@ interface IssueBase {
 export type TextAuditIssue =
   | (IssueBase & {
       readonly kind: 'overflow-x' | 'overflow-y';
-      /** How far the text ink escapes the box, in px at 96 DPI. */
+      /** How far the text ink escapes the text area (the box minus its insets), in px at 96 DPI. */
       readonly overflowPx: number;
+      /** How much ink lies outside the shape itself along that axis, both sides added
+       *  (a centred body spills half above, half below); 0 while it stays within the insets. */
+      readonly shapeOverflowPx: number;
+      /** The tallest line's height in px: about how far one misjudged wrap moves the text. */
+      readonly lineHeightPx: number;
     })
   | (IssueBase & {
       readonly kind: 'soft-wrap';
@@ -61,6 +66,25 @@ export type TextAuditIssue =
       /** Lines beyond the paragraph's authored line count (1 + explicit
        *  breaks) — i.e. how many times the text wrapped on its own. */
       readonly extraLines: number;
+    })
+  | (IssueBase & {
+      /** A wrap split a word: Latin / Greek / Cyrillic letters or digits, or a katakana run. */
+      readonly kind: 'word-break';
+      readonly paragraphIndex: number;
+      /** The split word, with `|` where the line breaks. */
+      readonly text: string;
+    })
+  | (IssueBase & {
+      /** A wrapped paragraph whose last line holds only a character or two (泣き別れ). */
+      readonly kind: 'short-last-line';
+      readonly paragraphIndex: number;
+      /** The text of that last line. */
+      readonly text: string;
+    })
+  | (IssueBase & {
+      readonly kind: 'small-font';
+      /** The smallest font size drawn in the shape, after autofit shrinking. */
+      readonly sizePt: number;
     });
 
 export interface AuditTextLayoutOptions {
@@ -75,9 +99,32 @@ export interface AuditTextLayoutOptions {
    *  breaks author (段落ち). Off by default: wrapping is normal for body
    *  text, so this is opt-in for single-line-intent content like titles. */
   readonly reportSoftWraps?: boolean;
+  /** Also report wraps that split a word (`word-break`) and wrapped
+   *  paragraphs that end on a line of one or two characters
+   *  (`short-last-line`). Horizontal text only. */
+  readonly reportBadWraps?: boolean;
+  /** Report shapes drawing text below this size in points (`small-font`). */
+  readonly minFontSizePt?: number;
 }
 
 const DEFAULT_TOLERANCE_PX = 1;
+const PT_PER_PX = 72 / 96;
+const SHORT_LAST_LINE_MAX_CHARS = 2;
+const LETTER_OR_DIGIT = /[\p{Script=Latin}\p{Script=Greek}\p{Script=Cyrillic}\p{Nd}]/u;
+// U+30FC (the prolonged sound mark) is Script=Common but belongs to the katakana word.
+const KATAKANA = /[\p{Script=Katakana}\u30FC]/u;
+const isWordChar = (ch: string): boolean => LETTER_OR_DIGIT.test(ch) || KATAKANA.test(ch);
+
+const splitsWord = (before: string, after: string): boolean =>
+  (LETTER_OR_DIGIT.test(before) && LETTER_OR_DIGIT.test(after)) ||
+  (KATAKANA.test(before) && KATAKANA.test(after));
+
+const charBefore = (s: string, i: number): string => {
+  const pair = i >= 2 ? s.codePointAt(i - 2)! : 0;
+  return pair > 0xffff ? s.slice(i - 2, i) : s.slice(i - 1, i);
+};
+const charAt = (s: string, i: number): string =>
+  i < s.length ? String.fromCodePoint(s.codePointAt(i)!) : '';
 
 const round2 = (n: number): number => Math.round(n * 100) / 100;
 
@@ -99,16 +146,23 @@ function* walkShapes(shapes: ReadonlyArray<SlideShapeData>): Generator<SlideShap
 // then falls back to the same substitution map.
 const passthroughFamily = (family: string | null): string => family ?? SANS;
 
+interface ResolvedOptions {
+  readonly tolerancePx: number;
+  readonly reportSoftWraps: boolean;
+  readonly reportBadWraps: boolean;
+  readonly minFontSizePt: number | undefined;
+}
+
 const auditShape = (
   pres: PresentationData,
   theme: PresentationTheme | null,
   shape: SlideShapeData,
   slideIndex: number,
   measure: TextMeasurer,
-  tolerancePx: number,
-  reportSoftWraps: boolean,
+  options: ResolvedOptions,
   issues: TextAuditIssue[],
 ): void => {
+  const { tolerancePx, reportSoftWraps, reportBadWraps, minFontSizePt } = options;
   const kind = getShapeKind(shape);
   if (kind !== 'shape' && kind !== 'graphicFrame') return;
   const bounds = getShapeBoundsResolved(pres, shape);
@@ -170,55 +224,79 @@ const auditShape = (
   // swapped extents re-centred on the box, so ink must be compared against
   // that frame, not the box itself.
   const rotated = vert === 'cw90' || vert === 'cw270';
-  const frame = rotated
-    ? {
-        x: input.boxXpx + input.boxWpx / 2 - input.boxHpx / 2,
-        y: input.boxYpx + input.boxHpx / 2 - input.boxWpx / 2,
-        w: input.boxHpx,
-        h: input.boxWpx,
-      }
-    : { x: input.boxXpx, y: input.boxYpx, w: input.boxWpx, h: input.boxHpx };
+  const frameOf = (x: number, y: number, w: number, h: number) =>
+    rotated ? { x: x + w / 2 - h / 2, y: y + h / 2 - w / 2, w: h, h: w } : { x, y, w, h };
+  const frame = frameOf(input.boxXpx, input.boxYpx, input.boxWpx, input.boxHpx);
+  const shapeFrame = frameOf(
+    (bounds.x as number) / EMU_PER_PX,
+    (bounds.y as number) / EMU_PER_PX,
+    (bounds.w as number) / EMU_PER_PX,
+    (bounds.h as number) / EMU_PER_PX,
+  );
 
   // Ink extents over every placed line. Empty lines (blank paragraphs, lines
   // of spaces) paint nothing — they influence later lines' positions but are
   // not themselves visible overflow.
+  let inkLeft = Infinity;
+  let inkRight = -Infinity;
   let inkTop = Infinity;
   let inkBottom = -Infinity;
-  let overflowX = 0;
-  let anyInk = false;
+  let lineHeight = 0;
   for (const p of core.placements) {
     const toks = [...p.line.tokens];
     while (toks.length > 0 && (toks[toks.length - 1]!.isSpace || toks[toks.length - 1]!.isBreak)) {
       toks.pop();
     }
     if (!toks.some((t) => !t.isSpace && !t.isBreak)) continue;
-    anyInk = true;
     let lineW = 0;
     for (const t of toks) {
       if (!t.isBreak) lineW += t.width;
     }
     const left =
-      p.line.textAnchor === 'middle'
+      (p.line.textAnchor === 'middle'
         ? p.line.anchorX - lineW / 2
         : p.line.textAnchor === 'end'
           ? p.line.anchorX - lineW
-          : p.line.anchorX;
-    const over = Math.max(frame.x - (left + p.dx), left + p.dx + lineW - (frame.x + frame.w));
-    if (over > overflowX) overflowX = over;
+          : p.line.anchorX) + p.dx;
+    inkLeft = Math.min(inkLeft, left);
+    inkRight = Math.max(inkRight, left + lineW);
     inkTop = Math.min(inkTop, p.baselineY - p.line.ascent);
     inkBottom = Math.max(inkBottom, p.baselineY + p.line.descent);
+    lineHeight = Math.max(lineHeight, p.line.ascent + p.line.descent);
   }
-  if (!anyInk) return;
+  if (inkLeft === Infinity) return;
 
   const approximate = detectApproximate(input.paragraphs, measure);
   const slideRef = { slideIndex, shapeName: getShapeName(shape), approximate };
+  const overflowXOf = (f: typeof frame): number =>
+    Math.max(0, f.x - inkLeft, inkRight - (f.x + f.w));
+  const overflowYOf = (f: typeof frame): number =>
+    Math.max(0, f.y - inkTop, inkBottom - (f.y + f.h));
+  const shapeOverflowXOf = (f: typeof frame): number =>
+    Math.max(0, f.x - inkLeft) + Math.max(0, inkRight - (f.x + f.w));
+  const shapeOverflowYOf = (f: typeof frame): number =>
+    Math.max(0, f.y - inkTop) + Math.max(0, inkBottom - (f.y + f.h));
+  const lineHeightPx = round2(lineHeight);
 
+  const overflowX = overflowXOf(frame);
   if (overflowX > tolerancePx) {
-    issues.push({ ...slideRef, kind: 'overflow-x', overflowPx: round2(overflowX) });
+    issues.push({
+      ...slideRef,
+      kind: 'overflow-x',
+      overflowPx: round2(overflowX),
+      shapeOverflowPx: round2(shapeOverflowXOf(shapeFrame)),
+      lineHeightPx,
+    });
   }
-  const overflowY = Math.max(frame.y - inkTop, inkBottom - (frame.y + frame.h));
+  const overflowY = overflowYOf(frame);
   if (overflowY > tolerancePx) {
-    issues.push({ ...slideRef, kind: 'overflow-y', overflowPx: round2(overflowY) });
+    issues.push({
+      ...slideRef,
+      kind: 'overflow-y',
+      overflowPx: round2(overflowY),
+      shapeOverflowPx: round2(shapeOverflowYOf(shapeFrame)),
+      lineHeightPx,
+    });
   }
 
   // 段落ち — a paragraph occupying more lines than 1 + its explicit <a:br>
@@ -236,6 +314,112 @@ const auditShape = (
         issues.push({ ...slideRef, kind: 'soft-wrap', paragraphIndex: pi, extraLines });
       }
     });
+  }
+  if (reportBadWraps && vert === 'none') {
+    auditLineBreaks(input.paragraphs, core.placements, slideRef, issues);
+  }
+  if (minFontSizePt !== undefined) {
+    let smallestPx = Infinity;
+    for (const para of input.paragraphs) {
+      for (const piece of para.pieces) {
+        if (!piece.isBreak && piece.text.trim() !== '' && piece.sizePx < smallestPx) {
+          smallestPx = piece.sizePx;
+        }
+      }
+    }
+    const sizePt = Math.round(smallestPx * PT_PER_PX * 10) / 10;
+    if (sizePt < minFontSizePt) issues.push({ ...slideRef, kind: 'small-font', sizePt });
+  }
+};
+
+// Lines carry no record of the explicit break that ended them, so each line is
+// located in its paragraph's text (a break piece written as `\n`): what lies
+// between two lines tells a hard break, a wrap at a space, and a wrap inside a word.
+const auditLineBreaks = (
+  paragraphs: ReturnType<typeof buildSvgTextInput>['paragraphs'],
+  placements: ReturnType<typeof layoutCore>['placements'],
+  slideRef: IssueBase,
+  issues: TextAuditIssue[],
+): void => {
+  const linesByParagraph = new Map<number, string[]>();
+  for (const { line } of placements) {
+    const text = line.tokens.map((t) => (t.isTab ? '\t' : t.text)).join('');
+    if (text.trim() === '') continue;
+    const lines = linesByParagraph.get(line.paraIndex);
+    if (lines) lines.push(text);
+    else linesByParagraph.set(line.paraIndex, [text]);
+  }
+  for (const [paragraphIndex, lines] of linesByParagraph) {
+    const source = paragraphs[paragraphIndex]!.pieces.map((p) => (p.isBreak ? '\n' : p.text)).join(
+      '',
+    );
+    auditParagraphBreaks(source, lines, { ...slideRef, paragraphIndex }, issues);
+  }
+};
+
+const auditParagraphBreaks = (
+  source: string,
+  lines: readonly string[],
+  ref: IssueBase & { readonly paragraphIndex: number },
+  issues: TextAuditIssue[],
+): void => {
+  // A word spanning several lines is one issue, with a `|` at each break.
+  type SplitWord = { readonly start: number; readonly end: number; readonly breaks: number[] };
+  const found: Array<TextAuditIssue | SplitWord> = [];
+  const wordsByStart = new Map<number, SplitWord>();
+  let previousEnd = -1;
+  let wrappedLines = 0;
+  const closeSegment = (lastLine: string): void => {
+    const visible = [...lastLine.replace(/\s/gu, '')];
+    if (wrappedLines > 0 && visible.length <= SHORT_LAST_LINE_MAX_CHARS) {
+      found.push({ ...ref, kind: 'short-last-line', text: lastLine.trim() });
+    }
+  };
+  for (let i = 0; i < lines.length; i++) {
+    const start = source.indexOf(lines[i]!, Math.max(previousEnd, 0));
+    // A line the layout rewrote (e.g. caps) cannot be placed; judge nothing.
+    if (start < 0) return;
+    if (previousEnd >= 0) {
+      const gap = source.slice(previousEnd, start);
+      if (gap.includes('\n')) {
+        closeSegment(lines[i - 1]!);
+        wrappedLines = 0;
+      } else {
+        wrappedLines++;
+        if (gap === '' && splitsWord(charBefore(source, start), charAt(source, start))) {
+          let wordStart = start;
+          while (wordStart > 0 && isWordChar(charBefore(source, wordStart))) {
+            wordStart -= charBefore(source, wordStart).length;
+          }
+          let word = wordsByStart.get(wordStart);
+          if (!word) {
+            let end = start;
+            while (end < source.length && isWordChar(charAt(source, end))) {
+              end += charAt(source, end).length;
+            }
+            word = { start: wordStart, end, breaks: [] };
+            wordsByStart.set(wordStart, word);
+            found.push(word);
+          }
+          word.breaks.push(start);
+        }
+      }
+    }
+    previousEnd = start + lines[i]!.length;
+  }
+  closeSegment(lines[lines.length - 1]!);
+  for (const entry of found) {
+    if ('kind' in entry) {
+      issues.push(entry);
+      continue;
+    }
+    let text = '';
+    let from = entry.start;
+    for (const at of entry.breaks) {
+      text += `${source.slice(from, at)}|`;
+      from = at;
+    }
+    issues.push({ ...ref, kind: 'word-break', text: text + source.slice(from, entry.end) });
   }
 };
 
@@ -271,7 +455,9 @@ const detectApproximate = (
 /**
  * Measures every text body in the deck and reports text that escapes its box
  * (`overflow-x` / `overflow-y`) and, opt-in, paragraphs that soft-wrap
- * (`soft-wrap`, 段落ち).
+ * (`soft-wrap`, 段落ち), wraps that split a word or strand a line of one or
+ * two characters (`word-break`, `short-last-line`), and text below a minimum
+ * size (`small-font`).
  *
  * Table cell text is not audited (v1 covers shape text bodies, including
  * placeholders and shapes inside groups).
@@ -281,14 +467,18 @@ export const auditTextLayout = (
   options: AuditTextLayoutOptions = {},
 ): ReadonlyArray<TextAuditIssue> => {
   const measure = options.measureText ?? defaultMeasurer;
-  const tolerancePx = options.tolerancePx ?? DEFAULT_TOLERANCE_PX;
-  const reportSoftWraps = options.reportSoftWraps ?? false;
+  const resolved: ResolvedOptions = {
+    tolerancePx: options.tolerancePx ?? DEFAULT_TOLERANCE_PX,
+    reportSoftWraps: options.reportSoftWraps ?? false,
+    reportBadWraps: options.reportBadWraps ?? false,
+    minFontSizePt: options.minFontSizePt,
+  };
   const theme = getPresentationTheme(pres);
   const issues: TextAuditIssue[] = [];
   const slides = getSlides(pres);
   for (let slideIndex = 0; slideIndex < slides.length; slideIndex++) {
     for (const shape of walkShapes(getSlideShapes(slides[slideIndex]!))) {
-      auditShape(pres, theme, shape, slideIndex, measure, tolerancePx, reportSoftWraps, issues);
+      auditShape(pres, theme, shape, slideIndex, measure, resolved, issues);
     }
   }
   return issues;
