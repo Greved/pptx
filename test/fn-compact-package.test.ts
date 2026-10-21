@@ -1,21 +1,31 @@
-// compactPackage — drop orphan media parts.
+// compactPackage — drop parts unreachable from the package root.
 
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   _internalPackageOf,
+  addSlideChart,
   addSlideImage,
   compactPackage,
   getMediaParts,
   getOrphanMediaPartNames,
+  getSlideNotes,
+  getSlidePartName,
   getSlides,
   inches,
+  listPackageParts,
   loadPresentation,
+  type PresentationData,
   removeShape,
+  removeSlide,
   savePresentation,
+  setNotesMasterPlaceholderIncluded,
+  setSlideNotes,
+  type SlideData,
 } from '../src/api/index.ts';
-import { partName } from '../src/internal/opc/index.ts';
+import { partName, relsPartNameFor } from '../src/internal/opc/index.ts';
+import { expectPackageValid } from './lib/expect-package-valid.ts';
 
 const fixture = (name: string): string =>
   fileURLToPath(new URL(`./fixtures/minimal/${name}`, import.meta.url));
@@ -122,5 +132,245 @@ describe('fn API: compactPackage', () => {
     // compactPackage shouldn't drop the media because the rel still
     // references it; this is the documented behavior.
     expect(compactPackage(pres).removed).toEqual([]);
+  });
+
+  describe('unreachable parts', () => {
+    const TAGS_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/tags';
+
+    const addTags = (pres: PresentationData, slide: SlideData, n: number): void => {
+      const pkg = _internalPackageOf(pres);
+      pkg.addPart(
+        partName(`/ppt/tags/tag${n}.xml`),
+        'application/vnd.openxmlformats-officedocument.presentationml.tags+xml',
+        new TextEncoder().encode(
+          '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+            '<p:tagLst xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">' +
+            `<p:tag name="SOURCE" val="${n}"/></p:tagLst>`,
+        ),
+      );
+      const source = partName(getSlidePartName(slide));
+      const rels = pkg.getRels(source)!;
+      rels.items.push({
+        id: `rIdTags${n}`,
+        type: TAGS_REL,
+        target: `../tags/tag${n}.xml`,
+        targetMode: 'Internal',
+      });
+      pkg.setRels(source, rels);
+    };
+
+    const addImageRel = (pres: PresentationData, target: string): void => {
+      const pkg = _internalPackageOf(pres);
+      const slide = partName('/ppt/slides/slide1.xml');
+      const rels = pkg.getRels(slide)!;
+      rels.items.push({
+        id: 'rIdExtra',
+        type: 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/image',
+        target,
+        targetMode: 'Internal',
+      });
+      pkg.setRels(slide, rels);
+    };
+
+    const partNames = (pres: PresentationData): string[] =>
+      listPackageParts(pres).map((p) => p.name);
+
+    it('drops the charts, workbooks, notes slide and tags of a removed slide', async () => {
+      const pres = await loadPresentation(await readFile(fixture('two-slides.pptx')));
+      for (const [i, slide] of getSlides(pres).entries()) {
+        addSlideChart(slide, {
+          x: inches(0.5),
+          y: inches(0.5),
+          w: inches(4),
+          h: inches(3),
+          spec: {
+            kind: 'column',
+            categories: ['Q1', 'Q2'],
+            series: [{ name: `Series ${i + 1}`, values: [1, 2] }],
+          },
+        });
+        addSlideImage(slide, tinyPng(), {
+          x: inches(5),
+          y: inches(0),
+          w: inches(1),
+          h: inches(1),
+          format: 'png',
+        });
+        setSlideNotes(slide, `Notes ${i + 1}`);
+        addTags(pres, slide, i + 1);
+      }
+      // Creates the notes master and links both notes slides to it.
+      setNotesMasterPlaceholderIncluded(pres, 'hdr', true);
+
+      const first = getSlides(pres)[0]!;
+      removeSlide(pres, first);
+      const before = partNames(pres);
+      const { removed } = compactPackage(pres);
+
+      expect([...removed].sort()).toEqual(
+        [
+          '/ppt/charts/chart1.xml',
+          '/ppt/charts/_rels/chart1.xml.rels',
+          '/ppt/embeddings/Microsoft_Excel_Worksheet1.xlsx',
+          '/ppt/media/image1.png',
+          '/ppt/notesSlides/notesSlide1.xml',
+          '/ppt/notesSlides/_rels/notesSlide1.xml.rels',
+          '/ppt/tags/tag1.xml',
+        ].sort(),
+      );
+      expect(partNames(pres)).toEqual(before.filter((name) => !removed.includes(name)));
+      // presentation.xml, docProps, theme, master, every layout, the notes
+      // master with its theme and the other slide's parts stay.
+      for (const name of [
+        '/ppt/presentation.xml',
+        '/docProps/core.xml',
+        '/docProps/app.xml',
+        '/ppt/presProps.xml',
+        '/ppt/theme/theme1.xml',
+        '/ppt/slideMasters/slideMaster1.xml',
+        '/ppt/slideLayouts/slideLayout1.xml',
+        '/ppt/slideLayouts/slideLayout11.xml',
+        '/ppt/notesMasters/notesMaster1.xml',
+        '/ppt/theme/theme2.xml',
+        '/ppt/charts/chart2.xml',
+        '/ppt/embeddings/Microsoft_Excel_Worksheet2.xlsx',
+        '/ppt/media/image2.png',
+        '/ppt/notesSlides/notesSlide2.xml',
+        '/ppt/tags/tag2.xml',
+      ])
+        expect(partNames(pres)).toContain(name);
+      const overrides = _internalPackageOf(pres).contentTypes.overrides.map((o) => o.partName);
+      for (const name of removed) expect(overrides).not.toContain(name);
+
+      const reloaded = await expectPackageValid(pres);
+      expect(getSlides(reloaded)).toHaveLength(1);
+      expect(getSlideNotes(getSlides(reloaded)[0]!)).toBe('Notes 2');
+      expect(compactPackage(reloaded).removed).toEqual([]);
+    });
+
+    it('keeps everything in an untouched deck', async () => {
+      const pres = await loadPresentation(await readFile(fixture('two-slides.pptx')));
+      const before = partNames(pres);
+      expect(compactPackage(pres).removed).toEqual([]);
+      expect(partNames(pres)).toEqual(before);
+    });
+
+    it('follows a percent-encoded target to a part stored under the decoded name', async () => {
+      const pres = await loadPresentation(await readFile(fixture('two-slides.pptx')));
+      const picture = partName('/ppt/media/logo 1.png');
+      _internalPackageOf(pres).addPart(picture, 'image/png', tinyPng());
+      addImageRel(pres, '../media/logo%201.png');
+
+      expect(compactPackage(pres).removed).toEqual([]);
+      expect(partNames(pres)).toContain(picture);
+    });
+
+    it('follows a percent-encoded non-ASCII target whatever its case', async () => {
+      const pres = await loadPresentation(await readFile(fixture('two-slides.pptx')));
+      const pkg = _internalPackageOf(pres);
+      const picture = partName('/ppt/media/Émage.png');
+      pkg.addPart(picture, 'image/png', tinyPng());
+      addImageRel(pres, '../media/%C3%89mage.png');
+
+      expect(getOrphanMediaPartNames(pres)).toEqual([]);
+      expect(compactPackage(pres).removed).toEqual([]);
+    });
+
+    it('drops `..` segments above the root instead of losing the part', async () => {
+      const pres = await loadPresentation(await readFile(fixture('two-slides.pptx')));
+      const picture = partName('/ppt/media/image99.png');
+      _internalPackageOf(pres).addPart(picture, 'image/png', tinyPng());
+      addImageRel(pres, '../../../ppt/media/image99.png');
+
+      expect(getOrphanMediaPartNames(pres)).toEqual([]);
+      expect(compactPackage(pres).removed).toEqual([]);
+    });
+
+    it('drops a part nothing points at, with its override', async () => {
+      const pres = await loadPresentation(await readFile(fixture('two-slides.pptx')));
+      const pkg = _internalPackageOf(pres);
+      const stray = partName('/ppt/tags/tag9.xml');
+      pkg.addPart(
+        stray,
+        'application/vnd.openxmlformats-officedocument.presentationml.tags+xml',
+        new TextEncoder().encode('<p:tagLst/>'),
+      );
+      expect(pkg.contentTypes.overrides.map((o) => o.partName)).toContain(stray);
+
+      expect(compactPackage(pres).removed).toEqual([stray]);
+      expect(pkg.contentTypes.overrides.map((o) => o.partName)).not.toContain(stray);
+      await expectPackageValid(pres);
+    });
+
+    it('keeps an override whose part was already missing', async () => {
+      const pres = await loadPresentation(await readFile(fixture('two-slides.pptx')));
+      const pkg = _internalPackageOf(pres);
+      const dangling = partName('/ppt/tags/tag9.xml');
+      pkg.contentTypes.overrides.push({
+        partName: dangling,
+        contentType: 'application/vnd.openxmlformats-officedocument.presentationml.tags+xml',
+      });
+
+      expect(compactPackage(pres).removed).toEqual([]);
+      expect(pkg.contentTypes.overrides.map((o) => o.partName)).toContain(dangling);
+    });
+
+    it('reports media referenced only by an unreachable part as orphaned', async () => {
+      const pres = await loadPresentation(await readFile(fixture('two-slides.pptx')));
+      const pkg = _internalPackageOf(pres);
+      const chart = partName('/ppt/charts/chart99.xml');
+      const picture = partName('/ppt/media/image99.png');
+      pkg.addPart(
+        chart,
+        'application/vnd.openxmlformats-officedocument.drawingml.chart+xml',
+        new TextEncoder().encode('<c:chartSpace/>'),
+      );
+      pkg.addPart(picture, 'image/png', tinyPng());
+      pkg.setRels(chart, {
+        items: [
+          {
+            id: 'rId1',
+            type: 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/image',
+            target: '../media/image99.png',
+            targetMode: 'Internal',
+          },
+        ],
+      });
+
+      expect(getOrphanMediaPartNames(pres)).toEqual([picture]);
+      expect(new Set(compactPackage(pres).removed)).toEqual(
+        new Set([chart, relsPartNameFor(chart), picture]),
+      );
+    });
+
+    describe('when /_rels/.rels does not reach presentation.xml', () => {
+      const unreachablePresentation = async (): Promise<PresentationData> => {
+        const pres = await loadPresentation(await readFile(fixture('two-slides.pptx')));
+        addSlideImage(getSlides(pres)[0]!, tinyPng(), {
+          x: inches(0),
+          y: inches(0),
+          w: inches(1),
+          h: inches(1),
+          format: 'png',
+        });
+        const rootRels = _internalPackageOf(pres).getPart(partName('/_rels/.rels'))!;
+        const xml = new TextDecoder().decode(rootRels.data);
+        const withoutPresentation = xml.replace(/<Relationship [^>]*\/officeDocument"[^>]*\/>/, '');
+        expect(withoutPresentation).not.toBe(xml);
+        rootRels.data = new TextEncoder().encode(withoutPresentation);
+        return pres;
+      };
+
+      it('compactPackage removes nothing', async () => {
+        const pres = await unreachablePresentation();
+        const before = partNames(pres);
+        expect(compactPackage(pres).removed).toEqual([]);
+        expect(partNames(pres)).toEqual(before);
+      });
+
+      it('getOrphanMediaPartNames reports nothing', async () => {
+        expect(getOrphanMediaPartNames(await unreachablePresentation())).toEqual([]);
+      });
+    });
   });
 });

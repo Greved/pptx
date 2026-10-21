@@ -1,7 +1,13 @@
 // Package introspection escape hatches.
 import { getSlides, isSlideHidden } from './slide-query.ts';
 
-import { partName } from '../../internal/opc/index.ts';
+import {
+  PACKAGE_ROOT,
+  type PartName,
+  parseRels,
+  partName,
+  relsPartNameFor,
+} from '../../internal/opc/index.ts';
 import type { OpcPackage } from '../../internal/parts/index.ts';
 import { type ShapeKind } from '../../internal/presentationml/index.ts';
 import { NS } from '../../internal/xml/index.ts';
@@ -14,9 +20,12 @@ import {
   SLIDE_SHAPES,
   type SlideData,
 } from '../_internal-symbols.ts';
+import { PRES_PART_NAME } from './_helpers.ts';
 import { getPresentationTheme } from './theme.ts';
 import { getSlideLayouts } from './layouts.ts';
 import { getSlideSections } from './sections.ts';
+
+const TEXT_DECODER = new TextDecoder();
 
 // ---------------------------------------------------------------------------
 // Package introspection escape hatches.
@@ -105,56 +114,83 @@ export const getMediaParts = (pres: PresentationData): ReadonlyArray<MediaPart> 
   return out;
 };
 
+const ROOT_RELS = '/_rels/.rels';
+const RELS_PART = /^(.*)\/_rels\/([^/]+)\.rels$/;
+
+// Like RFC 3986 dot-segment removal, `..` above the root is dropped rather than
+// rejected, so a non-conformant target still names the part a reader would load.
+const resolveClamped = (source: string, target: string): string => {
+  if (target.startsWith('/')) return target;
+  const segments = source.split('/').slice(1, -1);
+  for (const seg of target.split('/')) {
+    if (seg === '..') segments.pop();
+    else if (seg !== '.' && seg.length > 0) segments.push(seg);
+  }
+  return `/${segments.join('/')}`;
+};
+
+/** `/ppt/slides/_rels/slide1.xml.rels` → `/ppt/slides/slide1.xml`; `null` for other parts. */
+const relsSourceOf = (name: string): string | null => {
+  const m = RELS_PART.exec(name);
+  return m ? `${m[1]}/${m[2]}` : null;
+};
+
+// Only reachability decodes targets: some producers percent-encode a target
+// whose ZIP entry is stored decoded (`image%201.png` for `image 1.png`), and
+// keeping such a part is the safe direction for a destructive pass.
+const existingPartName = (byName: ReadonlyMap<string, unknown>, target: string): string | null => {
+  const lower = target.toLowerCase();
+  if (byName.has(lower)) return lower;
+  try {
+    const decoded = decodeURIComponent(target).toLowerCase();
+    return byName.has(decoded) ? decoded : null;
+  } catch {
+    return null;
+  }
+};
+
 /**
- * Returns every media part NOT referenced by any rels in the
- * package — the set `compactPackage` would remove. Non-destructive;
- * the caller decides whether to delete.
+ * Lowercased names of the parts reachable from `/_rels/.rels` through
+ * internal relationships (OPC part names compare case-insensitively), or
+ * `null` when that does not reach `/ppt/presentation.xml`, since the
+ * library opens the presentation part by name and the graph is then unusable.
+ */
+const reachablePartNames = (pkg: OpcPackage): ReadonlySet<string> | null => {
+  const byName = new Map(pkg.parts.map((p) => [p.name.toLowerCase(), p]));
+  const reachable = new Set<string>();
+  const queue: Array<PartName | typeof PACKAGE_ROOT> = [PACKAGE_ROOT];
+  while (queue.length > 0) {
+    const source = queue.pop()!;
+    const relsName = source === PACKAGE_ROOT ? ROOT_RELS : relsPartNameFor(source).toLowerCase();
+    const relsPart = byName.get(relsName);
+    if (!relsPart) continue;
+    for (const rel of parseRels(TEXT_DECODER.decode(relsPart.data)).items) {
+      if (rel.targetMode === 'External' || rel.target === '') continue;
+      const target = existingPartName(byName, resolveClamped(source, rel.target));
+      if (target === null || reachable.has(target)) continue;
+      reachable.add(target);
+      queue.push(partName(target));
+    }
+  }
+  return reachable.has(PRES_PART_NAME) ? reachable : null;
+};
+
+/**
+ * Returns every media part that cannot be reached from the package root
+ * through internal relationships — the media subset of what
+ * `compactPackage` would remove. Non-destructive; the caller decides
+ * whether to delete.
  *
  * Useful for audit UIs that want to surface bloat before cleaning,
  * and for "is this asset still used?" checks.
  */
 export const getOrphanMediaPartNames = (pres: PresentationData): ReadonlyArray<string> => {
   const pkg = pres[INTERNAL_PACKAGE];
-  const referenced = new Set<string>();
-  const resolve = (sourcePart: string, target: string): string => {
-    if (target.startsWith('/')) return target;
-    const dir = sourcePart.split('/').slice(0, -1);
-    const segments: string[] = [];
-    for (const seg of [...dir, ...target.split('/')]) {
-      if (seg === '..') segments.pop();
-      else if (seg !== '.' && seg.length > 0) segments.push(seg);
-    }
-    return `/${segments.join('/')}`;
-  };
-  for (const part of pkg.parts) {
-    if (!part.name.endsWith('.rels')) continue;
-    // /ppt/slides/_rels/slide1.xml.rels → /ppt/slides/slide1.xml
-    const m = part.name.match(/^(.*)\/_rels\/(.+)\.rels$/);
-    let sourceName: string;
-    if (part.name === '/_rels/.rels') {
-      sourceName = '/';
-    } else if (m) {
-      sourceName = `${m[1]}/${m[2]}`;
-    } else {
-      continue;
-    }
-    const sourceRels = sourceName === '/' ? pkg.rootRels() : pkg.getRels(sourceName as never);
-    if (!sourceRels) continue;
-    for (const rel of sourceRels.items) {
-      if (rel.targetMode === 'External') continue;
-      // Lowercase keys: OPC part names compare case-insensitively, so a rel
-      // target whose case differs from the media part name still counts as a
-      // reference (otherwise a referenced image is wrongly reported as orphan /
-      // deleted by compactPackage).
-      referenced.add(resolve(sourceName, rel.target).toLowerCase());
-    }
-  }
-  const out: string[] = [];
-  for (const part of pkg.parts) {
-    if (!part.name.startsWith('/ppt/media/')) continue;
-    if (!referenced.has(part.name.toLowerCase())) out.push(part.name);
-  }
-  return out;
+  const reachable = reachablePartNames(pkg);
+  if (reachable === null) return [];
+  return pkg.parts
+    .filter((p) => p.name.startsWith('/ppt/media/') && !reachable.has(p.name.toLowerCase()))
+    .map((p) => p.name);
 };
 
 /**
@@ -167,21 +203,11 @@ export const getSlideMediaPartNames = (slide: SlideData): ReadonlyArray<string> 
   const pkg = slide[INTERNAL_PACKAGE];
   const rels = pkg.getRels(slide[SLIDE_PART_NAME]);
   if (!rels) return [];
-  const resolve = (sourcePart: string, target: string): string => {
-    if (target.startsWith('/')) return target;
-    const dir = sourcePart.split('/').slice(0, -1);
-    const segments: string[] = [];
-    for (const seg of [...dir, ...target.split('/')]) {
-      if (seg === '..') segments.pop();
-      else if (seg !== '.' && seg.length > 0) segments.push(seg);
-    }
-    return `/${segments.join('/')}`;
-  };
   const out: string[] = [];
   const seen = new Set<string>();
   for (const rel of rels.items) {
     if (rel.targetMode === 'External') continue;
-    const resolved = resolve(slide[SLIDE_PART_NAME], rel.target);
+    const resolved = resolveClamped(slide[SLIDE_PART_NAME], rel.target);
     if (!resolved.startsWith('/ppt/media/')) continue;
     if (seen.has(resolved)) continue;
     seen.add(resolved);
@@ -203,23 +229,14 @@ export const slidesUsingMediaPart = (
   mediaPartName: string,
 ): ReadonlyArray<SlideData> => {
   const pkg = pres[INTERNAL_PACKAGE];
-  const resolve = (sourcePart: string, target: string): string => {
-    if (target.startsWith('/')) return target;
-    const dir = sourcePart.split('/').slice(0, -1);
-    const segments: string[] = [];
-    for (const seg of [...dir, ...target.split('/')]) {
-      if (seg === '..') segments.pop();
-      else if (seg !== '.' && seg.length > 0) segments.push(seg);
-    }
-    return `/${segments.join('/')}`;
-  };
   const out: SlideData[] = [];
   for (const slide of getSlides(pres)) {
     const rels = pkg.getRels(slide[SLIDE_PART_NAME]);
     if (!rels) continue;
     const hit = rels.items.some(
       (r) =>
-        r.targetMode !== 'External' && resolve(slide[SLIDE_PART_NAME], r.target) === mediaPartName,
+        r.targetMode !== 'External' &&
+        resolveClamped(slide[SLIDE_PART_NAME], r.target) === mediaPartName,
     );
     if (hit) out.push(slide);
   }
@@ -227,66 +244,30 @@ export const slidesUsingMediaPart = (
 };
 
 /**
- * Removes media parts that no rels graph references. Returns the
- * list of removed part names. Useful after a sequence of slide
- * removals leaves orphan images behind.
+ * Removes every part that cannot be reached from the package root
+ * (`/_rels/.rels`) through internal relationships, together with its
+ * `.rels` part and its `[Content_Types].xml` override. Returns the
+ * removed part names.
  *
- * Only `/ppt/media/...` parts are considered. The check walks every
- * `.rels` part in the package and resolves each internal rel target
- * against its source part name to build the live media set.
+ * `removeSlide` removes only the slide and its `.rels`, so the slide's
+ * charts, embedded workbooks, notes slide, tags and media stay in the
+ * package until this runs. Parts still in use — including layouts no
+ * slide uses, which their master references — are kept. Any other part
+ * nothing points at, such as custom data added without a relationship, is
+ * removed too. When `/_rels/.rels` does not reach `/ppt/presentation.xml`,
+ * nothing is removed.
  */
 export const compactPackage = (
   pres: PresentationData,
 ): { readonly removed: ReadonlyArray<string> } => {
   const pkg = pres[INTERNAL_PACKAGE];
-  const referenced = new Set<string>();
-
-  const resolve = (sourcePart: string, target: string): string => {
-    if (target.startsWith('/')) return target;
-    const dir = sourcePart.split('/').slice(0, -1);
-    const segments: string[] = [];
-    for (const seg of [...dir, ...target.split('/')]) {
-      if (seg === '..') segments.pop();
-      else if (seg !== '.' && seg.length > 0) segments.push(seg);
-    }
-    return `/${segments.join('/')}`;
-  };
-
-  for (const part of pkg.parts) {
-    if (!part.name.endsWith('.rels')) continue;
-    // /ppt/slides/_rels/slide1.xml.rels → /ppt/slides/slide1.xml
-    // /_rels/.rels                       → / (package root)
-    let sourceName = part.name.replace('/_rels/', '/').replace(/\.rels$/, '');
-    if (sourceName === '/' || sourceName === '') {
-      // Root rels — `rel.target` is relative to the package root.
-      // We don't need to consult pkg.getRels for it (the only thing it
-      // points at that we care about is the presentation.xml, which
-      // has its own rels we'll walk). Just parse the part data
-      // directly for completeness.
-      sourceName = '/';
-    }
-    const rels = sourceName === '/' ? null : pkg.getRels(partName(sourceName));
-    if (!rels) continue;
-    for (const rel of rels.items) {
-      if (rel.targetMode === 'External') continue;
-      // Lowercase keys: OPC part names compare case-insensitively, so a rel
-      // target whose case differs from the media part name still counts as a
-      // reference (otherwise a referenced image is wrongly reported as orphan /
-      // deleted by compactPackage).
-      referenced.add(resolve(sourceName, rel.target).toLowerCase());
-    }
-  }
-
-  const removed: string[] = [];
-  const orphans: string[] = [];
-  for (const part of pkg.parts) {
-    if (!part.name.startsWith('/ppt/media/')) continue;
-    if (!referenced.has(part.name.toLowerCase())) orphans.push(part.name);
-  }
-  for (const name of orphans) {
-    pkg.removePart(partName(name));
-    removed.push(name);
-  }
+  const reachable = reachablePartNames(pkg);
+  if (reachable === null) return { removed: [] };
+  const removed = pkg.retainParts((part) => {
+    const lower = part.name.toLowerCase();
+    if (lower === ROOT_RELS) return true;
+    return reachable.has(relsSourceOf(lower) ?? lower);
+  });
   return { removed };
 };
 
