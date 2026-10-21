@@ -61,6 +61,8 @@ change structure only when asked.
 
 ## Author and revise
 
+Before styling a new deck, read [the visual design rules](references/design.md): type
+size floors, cover and closing slides, color, cards, charts and tables.
 Read [the TSX reference](references/tsx.md) when first authoring or using unfamiliar
 elements; reuse already-read guidance during revisions. It covers
 native elements, charts, tables, template selection and the Raw escape hatch.
@@ -69,8 +71,8 @@ functions and data to reuse content; do not add React, Vue or a web UI.
 
 - Use the supplied brief, audience and source material. Ask only for information
   needed to proceed; label illustrative data when real figures are unavailable.
-- Choose a consistent palette and typography, with clear hierarchy and enough
-  space for text. Inspect chart labels, table density, contrast and overflow.
+- Keep the palette and type scale in `theme.ts` as [the design rules](references/design.md)
+  set them. Inspect chart labels, table density, contrast and overflow.
 - Keep text, shapes, charts and tables as native objects. Do not rasterize whole
   slides to make a preview look correct.
 - Keep assets and imported components under the slide project directory so they
@@ -143,6 +145,11 @@ with [the review steps](references/review.md): run `scripts/deck-text.mjs` from 
 skill's directory on `deck.pptx`, judge each flag, read the headline track, and for a
 new deck or a substantial rewrite run one fresh-eye review by a separate agent. The SVG preview is a rendering
 aid, not a guarantee of fidelity in desktop presentation apps or animation/media playback.
+
+The script also lists every `[要確認: …]` still on a slide, including chart titles and
+labels. Confirm each with the user and fill it, or move it to the slide notes when the
+slide reads correctly without it. Never deliver a deck that still shows one; report each
+one the script lists under notes to the user (slide and what is missing).
 
 Deliver the preview URL, the generated `deck.pptx` path and the editable project
 path. State any unverified rendering or unsupported requested feature. On the
