@@ -25,7 +25,7 @@ const captures = async () => {
     names.map(async (name) => {
       const text = await readFile(new URL(name, CAPTURES), 'utf8');
       const header =
-        /^<!-- Transition "([^"]+)".*ribbon Duration after apply: (\d+\.\d+) -->\n/.exec(text);
+        /^<!-- Transition "([^"]+)".*ribbon Duration after apply: (\d+\.\d+) -->\r?\n/.exec(text);
       assert.ok(header, name);
       return {
         name: header[1],

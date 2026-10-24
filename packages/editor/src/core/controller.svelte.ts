@@ -77,6 +77,7 @@ import { newSlideLayout } from './new-slide.ts';
 import { getCommand, type Command, type CommandContext } from './registry.ts';
 import { capabilityById } from '../manifest/index.ts';
 import { EditorDocument } from './document.svelte.ts';
+import type { ExternalHistoryAdapter } from './external-history.ts';
 import { t } from '../i18n/i18n.svelte.ts';
 import { ViewPreferences } from './view-preferences.svelte.ts';
 import { shapeScope, invert, project, type Matrix } from '../canvas/group-space.ts';
@@ -183,6 +184,7 @@ let toastSeq = 0;
 let activeShell: HTMLElement | undefined;
 
 export interface EditorControllerOptions {
+  externalHistory?: ExternalHistoryAdapter;
   /**
    * The editor runs in a frame of the development preview, which presents slide
    * shows and hosts the Agents pane through `postMessage`.
@@ -199,6 +201,7 @@ export class EditorController {
   #shell: HTMLElement | undefined;
 
   constructor(options: EditorControllerOptions = {}) {
+    this.doc = new EditorDocument(options.externalHistory);
     this.hostFrame = options.hostFrame ?? false;
     this.feedbackUrl = options.feedbackUrl;
   }
@@ -233,7 +236,7 @@ export class EditorController {
     return unfocused && activeShell === shell;
   }
 
-  readonly doc = new EditorDocument();
+  readonly doc: EditorDocument;
   readonly view = new ViewPreferences();
   readonly ink = new InkState();
   inlineTextFormat = $state<{

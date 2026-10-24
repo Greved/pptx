@@ -2,6 +2,7 @@ import type { PresentationData } from '@office-kit/pptx';
 import EditorApp from './EditorApp.svelte';
 import { EditorController } from './core/controller.svelte.ts';
 import type { ChangeSource } from './core/change-source.ts';
+import type { ExternalHistoryAdapter } from './core/external-history.ts';
 import type { EditorTool, JsonValue } from './core/agent-tools.ts';
 import { downloadPptx } from './core/download.ts';
 import { devHostOptions } from './core/dev-host.ts';
@@ -15,6 +16,7 @@ import { mountInPage, mountInShadowRoot } from './mount.ts';
 
 export { resolveShape, type ShapeRef } from './core/shape-ref.ts';
 export type { ChangeSource } from './core/change-source.ts';
+export type { ExternalHistoryAdapter } from './core/external-history.ts';
 export type { EditorTool, JsonSchema, JsonValue } from './core/agent-tools.ts';
 export type { ProposalOrigin, ProposeOptions, ProposeResult } from './core/proposal.ts';
 export type { DeckConflict } from './merge/deck-merge.ts';
@@ -23,6 +25,8 @@ export type { DeckConflict } from './merge/deck-merge.ts';
 export type EditorLocale = 'en' | 'ja';
 
 export interface EditorOptions {
+  /** Host-owned synchronous history. Disables all internal PPTX history snapshots. */
+  externalHistory?: ExternalHistoryAdapter;
   /**
    * The `.pptx` file to open. Without it the editor starts a new presentation
    * with one title slide, as File ▸ New does.
@@ -117,6 +121,12 @@ export interface EditorHandle {
    */
   apply(label: string, edit: (presentation: PresentationData) => void): Promise<void>;
   /**
+   * Refreshes the projection after the host accepts a change in external history.
+   * Does not reset or commit history. Rejects without an external adapter, before
+   * ready, after destroy, during a gesture or while a proposal is in progress.
+   */
+  refreshFromExternalHistory(): Promise<void>;
+  /**
    * Hands the editor a version of the presentation made elsewhere: `edited`,
    * made from `base` (for an agent, the `snapshot()` it worked on; for the
    * source, the previous build). It is merged with the open presentation,
@@ -185,6 +195,7 @@ export function mountEditor(target: HTMLElement, options: EditorOptions = {}): E
   if (locale) setLocale(locale, false);
   const dev = devHostOptions.get(options);
   const editor = new EditorController({
+    externalHistory: options.externalHistory,
     hostFrame: dev?.previewFrame,
     feedbackUrl: dev?.feedback?.url,
   });
@@ -304,6 +315,12 @@ export function mountEditor(target: HTMLElement, options: EditorOptions = {}): E
         await doc.rollback;
         throw error;
       }
+    },
+    async refreshFromExternalHistory() {
+      assertOpen();
+      if (proposing || editor.proposal)
+        throw new Error('A proposal is in progress; finish it before refreshing external history.');
+      doc.refreshFromExternalHistory();
     },
     async propose(base, edited, proposeOptions) {
       assertOpen();

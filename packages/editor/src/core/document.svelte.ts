@@ -9,7 +9,7 @@
 // so any command re-renders the canvas without the store needing to understand
 // the shape of every mutation.
 //
-// Undo/redo snapshots the presentation by *serializing it to .pptx bytes*, not
+// By default undo/redo snapshots the presentation by *serializing it to .pptx bytes*, not
 // by structuredClone: the model's real state hangs off a symbol-keyed
 // `OpcPackage` instance that structuredClone silently drops, producing a
 // corrupt copy. save→load is the library's guaranteed round-trip, so it is the
@@ -18,6 +18,8 @@
 // that promise immediately so rapid edits remain distinct. Because each discrete
 // gesture (a drag, a click) commits exactly one transaction, this is one
 // serialization per user action — not per pointer move.
+// A host-supplied external history replaces that mechanism entirely, including
+// the initial snapshot, and restores projections synchronously from its model.
 
 import {
   createPresentation,
@@ -34,6 +36,7 @@ import type { RememberedFill } from './remembered-fill.ts';
 import { renderSlideToSvg } from '@office-kit/pptx-preview';
 import type { CustomShow, PresentationData, SlideData, SlideShapeData } from '@office-kit/pptx';
 import type { ChangeSource } from './change-source.ts';
+import type { ExternalHistoryAdapter } from './external-history.ts';
 import { RegroupHistory } from './regroup-history.ts';
 import { selectedSlideIndices, type Selection } from './selection.ts';
 
@@ -78,6 +81,8 @@ export class EditorDocument {
   // a newer Open/Undo/Redo that wins the race but then fails can resume it.
   #rollbackState: { selection: Selection; dirty: boolean } | null = null;
   #rollback: Promise<void> = Promise.resolve();
+  readonly #externalHistory: ExternalHistoryAdapter | undefined;
+  #liveDirty: boolean | undefined;
   readonly regroupHistory = new RegroupHistory();
   /**
    * Called after the committed document changes: an edit or gesture is
@@ -87,9 +92,11 @@ export class EditorDocument {
    */
   onChange: ((source: ChangeSource) => void) | undefined;
 
-  constructor() {
+  constructor(externalHistory?: ExternalHistoryAdapter) {
+    this.#externalHistory = externalHistory;
     // Seed the initial state so the first undo returns to the blank deck.
-    this.#snapshot('Initial');
+    if (externalHistory) externalHistory.reset(this.pres);
+    else this.#snapshot('Initial');
   }
 
   // --- Derived views -----------------------------------------------------
@@ -120,18 +127,34 @@ export class EditorDocument {
     }
   });
 
-  canUndo = $derived(this.#requestedCursor > 0);
-  canRedo = $derived(
-    this.#requestedCursor >= 0 && this.#requestedCursor < this.#history.length - 1,
-  );
+  canUndo = $derived.by(() => {
+    void this.committedVersion;
+    return this.#externalHistory ? this.#externalHistory.canUndo : this.#requestedCursor > 0;
+  });
+  canRedo = $derived.by(() => {
+    void this.committedVersion;
+    return this.#externalHistory
+      ? this.#externalHistory.canRedo
+      : this.#requestedCursor >= 0 && this.#requestedCursor < this.#history.length - 1;
+  });
   /** The name of the edit Undo reverts (Edit ▸ Undo <name>), or null. */
-  undoLabel = $derived(
-    this.#requestedCursor > 0 ? (this.#history[this.#requestedCursor]?.label ?? null) : null,
-  );
+  undoLabel = $derived.by(() => {
+    void this.committedVersion;
+    return this.#externalHistory
+      ? this.#externalHistory.undoLabel
+      : this.#requestedCursor > 0
+        ? (this.#history[this.#requestedCursor]?.label ?? null)
+        : null;
+  });
   /** The name of the edit Redo restores, or null. */
-  redoLabel = $derived(
-    this.canRedo ? (this.#history[this.#requestedCursor + 1]?.label ?? null) : null,
-  );
+  redoLabel = $derived.by(() => {
+    void this.committedVersion;
+    return this.#externalHistory
+      ? this.#externalHistory.redoLabel
+      : this.canRedo
+        ? (this.#history[this.#requestedCursor + 1]?.label ?? null)
+        : null;
+  });
 
   // --- Resolvers ---------------------------------------------------------
   slideAt(index: number): SlideData | null {
@@ -151,6 +174,8 @@ export class EditorDocument {
    * `dirty: false` is for a step that leaves the deck as its host has saved it.
    */
   transact<T>(label: string, fn: () => T, source: ChangeSource = 'user', dirty = true): T {
+    if (this.#externalHistory && this.liveEditing)
+      throw new Error('Finish the current gesture before starting another transaction.');
     const result = this.#atomic(() => {
       this.#invalidateRestore();
       const current = this.#history[this.#cursor];
@@ -161,7 +186,7 @@ export class EditorDocument {
       const result = fn();
       this.version++;
       this.dirty = dirty;
-      this.#snapshot(label);
+      this.#commitHistory(label, source);
       return result;
     });
     // Outside #atomic: a throwing listener must not roll back a committed edit.
@@ -171,10 +196,17 @@ export class EditorDocument {
 
   /** Persist a document setting without adding an undo step (as the reference desktop app does for aspect locks). */
   setDocumentSetting(fn: () => void): void {
+    if (this.#externalHistory && this.liveEditing)
+      throw new Error('Finish the current gesture before changing document settings.');
     this.#atomic(() => {
       this.#invalidateRestore();
       fn();
       this.version++;
+      if (this.#externalHistory) {
+        this.#commitHistory('Document setting', 'user');
+        this.dirty = true;
+        return;
+      }
       this.committedVersion = this.version;
       this.dirty = true;
       const bytes = savePresentation(this.pres);
@@ -192,6 +224,7 @@ export class EditorDocument {
    */
   applyLive<T>(fn: () => T): T {
     return this.#atomic(() => {
+      if (!this.liveEditing) this.#liveDirty = this.dirty;
       this.liveEditing = true;
       this.#invalidateRestore();
       const result = fn();
@@ -205,7 +238,8 @@ export class EditorDocument {
   commit(label: string): void {
     this.#atomic(() => {
       this.liveEditing = false;
-      this.#snapshot(label);
+      this.#commitHistory(label, 'user');
+      this.#liveDirty = undefined;
     });
     this.onChange?.('user');
   }
@@ -231,6 +265,20 @@ export class EditorDocument {
     try {
       return fn();
     } catch (error) {
+      if (this.#externalHistory) {
+        const dirty = this.#liveDirty ?? state.dirty;
+        try {
+          this.#restoreExternal('rollback');
+        } catch (restoreError) {
+          this.liveEditing = false;
+          this.#rollbackBlock =
+            'The previous edit failed and could not be undone. Reopen the presentation.';
+          throw new AggregateError([error, restoreError], this.#rollbackBlock);
+        }
+        this.dirty = dirty;
+        this.#liveDirty = undefined;
+        throw error;
+      }
       this.#startRollback(state);
       throw error;
     }
@@ -267,6 +315,44 @@ export class EditorDocument {
   #invalidateRestore(): void {
     this.#operation++;
     this.#requestedCursor = this.#cursor;
+  }
+
+  #commitHistory(label: string, source: ChangeSource): void {
+    if (this.#externalHistory) {
+      this.#externalHistory.commit(this.pres, {
+        label,
+        source,
+        slideIndex: this.selection.slideIndex,
+      });
+      this.regroupHistory.prune(getSlides(this.pres));
+      this.committedVersion = this.version;
+    } else this.#snapshot(label);
+  }
+
+  #resetExternal(pres: PresentationData): void {
+    const history = this.#externalHistory;
+    if (!history) return;
+    // New/Open must remain usable even if a host projection restore failed.
+    if (this.#rollbackBlock !== null) history.reset(pres);
+    else this.#atomic(() => history.reset(pres));
+  }
+
+  #restoreExternal(action: Parameters<ExternalHistoryAdapter['restore']>[0]): void {
+    if (!this.#externalHistory) return;
+    this.pres = this.#externalHistory.restore(action, this.pres);
+    this.#invalidateRestore();
+    this.#endRollback();
+    // The host may rebuild shape IDs, so stale shape/cell selections and regroup
+    // references must not survive a projection replacement.
+    this.selection = {
+      kind: 'none',
+      slideIndex: Math.max(0, Math.min(this.selection.slideIndex, getSlides(this.pres).length - 1)),
+    };
+    this.regroupHistory.records = [];
+    this.rememberedFills.clear();
+    this.liveEditing = false;
+    this.version++;
+    this.committedVersion = this.version;
   }
 
   /** Capture before yielding: neither the document nor selection may drift. */
@@ -317,20 +403,56 @@ export class EditorDocument {
 
   /** Discard the current gesture without adding an undo step or dropping redo. */
   async cancelLive(): Promise<void> {
+    if (this.#externalHistory) {
+      if (this.liveEditing) {
+        this.#atomic(() => this.#restoreExternal('cancel'));
+        this.dirty = this.#liveDirty ?? this.dirty;
+        this.#liveDirty = undefined;
+      }
+      return;
+    }
     if (this.liveEditing) await this.#restore(this.#cursor, this.selection);
   }
 
   async undo(): Promise<void> {
+    if (this.#externalHistory) {
+      if (this.canUndo) {
+        this.#atomic(() => this.#restoreExternal('undo'));
+        this.#liveDirty = undefined;
+        this.dirty = true;
+        this.onChange?.('user');
+      }
+      return;
+    }
     if (this.#requestedCursor > 0 && (await this.#restore(this.#requestedCursor - 1)))
       this.onChange?.('user');
   }
 
   async redo(): Promise<void> {
+    if (this.#externalHistory) {
+      if (this.canRedo) {
+        this.#atomic(() => this.#restoreExternal('redo'));
+        this.#liveDirty = undefined;
+        this.dirty = true;
+        this.onChange?.('user');
+      }
+      return;
+    }
     if (
       this.#requestedCursor < this.#history.length - 1 &&
       (await this.#restore(this.#requestedCursor + 1))
     )
       this.onChange?.('user');
+  }
+
+  /** Reproject a canonical change already accepted by the external host. */
+  refreshFromExternalHistory(): void {
+    if (!this.#externalHistory) throw new Error('External history is not configured.');
+    if (this.liveEditing)
+      throw new Error('Finish the current gesture before refreshing external history.');
+    this.#atomic(() => this.#restoreExternal('rollback'));
+    this.dirty = true;
+    this.onChange?.('agent');
   }
 
   // --- Selection ---------------------------------------------------------
@@ -404,6 +526,7 @@ export class EditorDocument {
       throw error;
     }
     if (operation !== this.#operation) return;
+    this.#resetExternal(pres);
     this.pres = pres;
     this.#endRollback();
     this.fileName = name;
@@ -415,7 +538,9 @@ export class EditorDocument {
     this.version++;
     this.dirty = dirty;
     this.liveEditing = false;
-    this.#snapshot('Open');
+    this.#liveDirty = undefined;
+    if (this.#externalHistory) this.committedVersion = this.version;
+    else this.#snapshot('Open');
     this.onChange?.('user');
   }
 
@@ -433,8 +558,10 @@ export class EditorDocument {
   }
 
   resetBlank(): void {
+    const pres = createInitial();
+    this.#resetExternal(pres);
     this.#invalidateRestore();
-    this.pres = createInitial();
+    this.pres = pres;
     this.#endRollback();
     this.fileName = 'Untitled.pptx';
     this.regroupHistory.records = [];
@@ -445,7 +572,9 @@ export class EditorDocument {
     this.version++;
     this.dirty = false;
     this.liveEditing = false;
-    this.#snapshot('New');
+    this.#liveDirty = undefined;
+    if (this.#externalHistory) this.committedVersion = this.version;
+    else this.#snapshot('New');
     this.onChange?.('user');
   }
 }

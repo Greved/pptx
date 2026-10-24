@@ -37,16 +37,17 @@ The editor fills the element you mount it in, so give that element a size
 
 ### `mountEditor(target, options?)`
 
-| Option     | Type                                                                | Default                                                      |
-| ---------- | ------------------------------------------------------------------- | ------------------------------------------------------------ |
-| `source`   | `Uint8Array`                                                        | A new presentation with one title slide, as File ▸ New.      |
-| `fileName` | `string`                                                            | `Untitled.pptx`: shown in the title bar, used for downloads. |
-| `locale`   | `'en' \| 'ja'`                                                      | The language last picked in the editor, else the browser's.  |
-| `onSave`   | `(pptx: Uint8Array) => Promise<boolean \| void> \| boolean \| void` | Without it, saving downloads the file.                       |
-| `autoSave` | `boolean`                                                           | `false`. Shows the AutoSave switch; needs `onSave`.          |
-| `compact`  | `boolean`                                                           | `false`. A slimmer title bar without the product name.       |
-| `status`   | `HTMLElement`                                                       | None. Your own element in the title bar (a save status).     |
-| `isolate`  | `boolean`                                                           | `true`. `false` renders into the page, without shadow root.  |
+| Option            | Type                                                                | Default                                                                                         |
+| ----------------- | ------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `source`          | `Uint8Array`                                                        | A new presentation with one title slide, as File ▸ New.                                         |
+| `fileName`        | `string`                                                            | `Untitled.pptx`: shown in the title bar, used for downloads.                                    |
+| `locale`          | `'en' \| 'ja'`                                                      | The language last picked in the editor, else the browser's.                                     |
+| `onSave`          | `(pptx: Uint8Array) => Promise<boolean \| void> \| boolean \| void` | Without it, saving downloads the file.                                                          |
+| `autoSave`        | `boolean`                                                           | `false`. Shows the AutoSave switch; needs `onSave`.                                             |
+| `compact`         | `boolean`                                                           | `false`. A slimmer title bar without the product name.                                          |
+| `status`          | `HTMLElement`                                                       | None. Your own element in the title bar (a save status).                                        |
+| `isolate`         | `boolean`                                                           | `true`. `false` renders into the page, without shadow root.                                     |
+| `externalHistory` | `ExternalHistoryAdapter`                                            | None. Replaces the editor's internal PPTX snapshot history with synchronous host-owned history. |
 
 `onSave` runs when the user saves: the Save button, File ▸ Save, or
 Ctrl/Cmd+S; when you call `save()`; and, with `autoSave` while its switch is
@@ -61,6 +62,68 @@ settled.
 own styles apply to it. `isolate: false` is only for a page that belongs to the
 editor alone, such as its own `<iframe>`: the page's styles then reach the
 editor and the editor's reach the page.
+
+### Host-owned history
+
+Pass `externalHistory` to keep a canonical document model and its undo/redo
+history in your application. Import `ExternalHistoryAdapter` from
+`@office-kit/pptx-editor`; no internal entry point is needed. When supplied,
+the editor never serializes a PPTX for history, including at startup. Explicit
+save, export and `snapshot()` still serialize the current presentation.
+
+```ts
+interface ExternalHistoryAdapter {
+  reset(presentation: PresentationData): void;
+  commit(
+    presentation: PresentationData,
+    context: {
+      readonly label: string;
+      readonly source: 'user' | 'agent' | 'source';
+      readonly slideIndex: number;
+    },
+  ): void;
+  restore(
+    action: 'undo' | 'redo' | 'cancel' | 'rollback',
+    presentation: PresentationData,
+  ): PresentationData;
+  readonly canUndo: boolean;
+  readonly canRedo: boolean;
+  readonly undoLabel: string | null;
+  readonly redoLabel: string | null;
+}
+```
+
+All callbacks are synchronous. `reset` runs for the initial blank presentation,
+then again when an initial `source` is loaded, and on New/Open. It replaces
+canonical state and clears history. `commit` runs once for a transaction or a
+completed live gesture, and for document settings (label `Document setting`,
+source `user`). The host decides whether settings add an undo step. Gesture
+frames never call `commit`.
+While a gesture is live, separate transactions and document settings are
+rejected before mutation; finish or cancel the gesture before applying them.
+
+The presentation is a mutable projection: read it into your own canonical model
+instead of retaining it as canonical state. Validate and prepare a change before
+replacing canonical state/history. A throwing `commit` or `reset` must leave
+canonical state/history unchanged. On mutation failure the editor calls
+`restore('rollback', partialPresentation)` synchronously; cancel calls
+`restore('cancel', livePresentation)`. Both must return the last committed
+projection without moving the host history cursor. Undo/redo move that cursor
+and return the resulting projection; they must also be atomic if they throw.
+
+Each returned presentation must be usable by the core API and independent of
+the discarded projection. Replacements clear shape/cell selection and regroup
+records and clamp the active slide, because host projections may assign new
+numeric shape IDs. Cancel and rollback restore the prior dirty flag. If rollback
+itself fails, editing and saving are blocked until New/Open succeeds. With no
+adapter, the existing PPTX snapshot history and document-setting behavior apply.
+
+After your host accepts an operation directly into canonical history (for example
+an AI proposal), call `await editor.refreshFromExternalHistory()`. It obtains a
+projection through `restore('rollback', currentPresentation)` without resetting
+or committing history, marks the deck dirty and emits an `agent` change. The
+same undo stack therefore includes the host acceptance and subsequent UI edits.
+It rejects without an adapter or while a gesture or proposal is in progress.
 
 It returns an `EditorHandle`:
 
