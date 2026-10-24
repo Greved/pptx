@@ -193,7 +193,7 @@ export const internMediaPart = (
   }
   const name = nextMediaPartName(pkg, 'media', extension);
   setOpcDefault(pkg, extension, contentType);
-  pkg.addPart(name, contentType, bytes);
+  pkg.addPart(name, contentType, new Uint8Array(bytes));
   return name;
 };
 
@@ -294,7 +294,7 @@ export const addSlideMedia = (slide: SlideData, opts: SlideMediaOptions): SlideS
   const posterContentType = contentTypeForFormat(posterFormat);
   const posterPart = nextMediaPartName(pkg, 'image', posterExtension);
   setOpcDefault(pkg, posterExtension, posterContentType);
-  pkg.addPart(posterPart, posterContentType, poster);
+  pkg.addPart(posterPart, posterContentType, new Uint8Array(poster));
   const rPoster = relate(REL_TYPES.image, relativeTarget(posterPart), 'Internal');
   pkg.setRels(slidePartName, rels);
 

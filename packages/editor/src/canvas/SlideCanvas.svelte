@@ -1,5 +1,7 @@
 <script lang="ts">
   import { mergeTextFormat } from '../core/merge-text-format.ts';
+  import { canTransformGesturePaint, gesturePaintTransform } from './gesture-paint.ts';
+  import { svgPaint } from './svg-paint.ts';
   import { lockedShapeIds } from '../core/shape-locks.ts';
   import type { TabStopEdit } from '../core/paragraph-tabs.ts';
   import { applyRulerChange, rulerIndent, type IndentHandle, type RulerChange, type TextFlow } from '../core/ruler.ts';
@@ -103,9 +105,13 @@
   const drawingGuides = $derived(editor.guidesVisible() ? editor.drawingGuides() : []);
 
   // Slide size in CSS px at 96dpi (1 inch = 914400 EMU = 96px).
+  // Primitive barriers keep geometry-only edits from restarting fit observation
+  // and forcing layout when the presentation's dimensions have not changed.
+  const slideWidthEmu = $derived(metrics.widthEmu);
+  const slideHeightEmu = $derived(metrics.heightEmu);
   const slidePx = $derived.by(() => ({
-    w: (metrics.widthEmu / 914400) * 96,
-    h: (metrics.heightEmu / 914400) * 96,
+    w: (slideWidthEmu / 914400) * 96,
+    h: (slideHeightEmu / 914400) * 96,
   }));
 
   // The reference desktop app's (Mac) 100% zoom shows one slide point per screen point (72 per
@@ -221,6 +227,11 @@
     moved: boolean;
   }
   let drag = $state<Drag | null>(null);
+  // Keep the original glyph DOM while translating/rotating it. Reading currentSvg
+  // during these frames would lay out every rich-text run on the slide again.
+  let gestureSvg = $state<typeof doc.currentPaint | null>(null);
+  const paintedSvg = $derived(gestureSvg ?? doc.currentPaint);
+  let gesturePaint = new Map<number, Element[]>();
   let guides = $state<readonly Guide[]>([]);
   let textInput = $state<RichTextInput>();
   let textRange = $state({ start: 0, end: 0 });
@@ -251,7 +262,14 @@
   function cancelGesture() {
     if (!drag && !marquee && !cellDrag) return;
     if (raf) { cancelAnimationFrame(raf); raf = 0; }
+    // A synchronous host rollback can produce the identical SVG string. Svelte
+    // then keeps this DOM, so restore the temporary transforms explicitly.
+    for (const elements of gesturePaint.values()) {
+      for (const element of elements) element.removeAttribute('transform');
+    }
     drag = null;
+    gestureSvg = null;
+    gesturePaint.clear();
     marquee = null;
     cellDrag = null;
     guides = [];
@@ -339,6 +357,10 @@
     const pointer = localPoint({ x: e.clientX, y: e.clientY });
     const startAngle = Math.atan2(pointer.y - center.y, pointer.x - center.x) * 180 / Math.PI;
     const singleShape = ids.length === 1 ? doc.shapeById(doc.selection.slideIndex, ids[0]!) : undefined;
+    if (canTransformGesturePaint(mode, !!scope?.parent) && paintEl) {
+      gestureSvg = untrack(() => doc.currentPaint);
+      gesturePaint.clear();
+    }
     drag = {
       mode,
       handle,
@@ -397,6 +419,12 @@
 
   function applyDragFrame() {
     if (!drag) return;
+    if (gestureSvg !== null && gesturePaint.size === 0 && paintEl) {
+      // Finishing an inline draft can repaint between pointerdown and this frame.
+      // Capture the settled glyph nodes, rather than nodes that Svelte replaced.
+      const paint = paintEl;
+      gesturePaint = new Map(drag.ids.map(id => [id, [...paint.querySelectorAll(`[data-pptx-shape-id="${id}"]`)]]));
+    }
     const start = localPoint(drag.startClient), last = localPoint(drag.last);
     const dxEmu = last.x - start.x;
     const dyEmu = last.y - start.y;
@@ -423,6 +451,9 @@
           if (s) setShapeBounds(s, { x: Math.round(r.x + gdx) as never, y: Math.round(r.y + gdy) as never, w: r.w as never, h: r.h as never });
         }
       });
+      for (const elements of gesturePaint.values()) {
+        for (const element of elements) element.setAttribute('transform', gesturePaintTransform('move', { x: gdx, y: gdy }));
+      }
     } else if (drag.mode === 'resize') {
       const entries = [...drag.startRects];
       const delta = { x: dxEmu, y: dyEmu };
@@ -453,6 +484,10 @@
           setShapeRotation(s, (drag!.startRotations.get(id)! + drag!.turn + 360) % 360);
         }
       });
+      for (const [id, rect] of drag.startRects) {
+        const transform = gesturePaintTransform('rotate', { x: rect.x + rect.w / 2, y: rect.y + rect.h / 2 }, drag.turn);
+        for (const element of gesturePaint.get(id) ?? []) element.setAttribute('transform', transform);
+      }
     }
   }
 
@@ -478,6 +513,8 @@
         doc.commit(label); // a real gesture → one undo step
       }
       drag = null;
+      gestureSvg = null;
+      gesturePaint.clear();
       guides = [];
       if (clicked && !event.metaKey && !event.ctrlKey && textInterior(event, clicked)) editAtPointer(event, clicked);
     }
@@ -565,7 +602,7 @@
   function onTypeToEdit(e: KeyboardEvent) {
     if (editing || e.isComposing || editor.activeDialog || !editor.ownsEvent(e)) return;
     const target = eventTarget(e) as HTMLElement;
-    if (target && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName))) return;
+    if (target && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT|SUMMARY)$/.test(target.tagName))) return;
     // Table grid buttons deliberately forward typing into the selected cell.
     if (target?.tagName === 'BUTTON' && !target.matches('.cell-grid [data-cell]')) return;
     const fontStep = e.shiftKey && !e.altKey && (e.ctrlKey || e.metaKey) &&
@@ -966,7 +1003,7 @@
   });
 
   $effect(() => {
-    doc.currentSvg;
+    paintedSvg;
     const id = editing?.id;
     const cell = editing?.cell;
     if (id === undefined || !paintEl) return;
@@ -1496,7 +1533,7 @@
       role="presentation"
     >
       {#key doc.selection.slideIndex}
-        <div class="paint" bind:this={paintEl}>{@html doc.currentSvg}</div>
+        <div class="paint" bind:this={paintEl} use:svgPaint={paintedSvg}></div>
       {/key}
       {#if editor.ink.tool}<InkLayer widthEmu={metrics.widthEmu} heightEmu={metrics.heightEmu} />{/if}
       {#if editor.drawShape}<DrawShapeLayer widthEmu={metrics.widthEmu} heightEmu={metrics.heightEmu} />{/if}

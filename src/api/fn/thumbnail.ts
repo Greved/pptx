@@ -85,13 +85,13 @@ export const setThumbnail = (
     if (hit.partName === desiredName) {
       const part = pkg.getPart(hit.partName);
       if (!part) throw new Error(`thumbnail rel points at missing part ${hit.partName}`);
-      part.data = bytes;
+      part.data = new Uint8Array(bytes);
       part.contentType = contentType;
       setOpcDefault(pkg, extension, contentType);
       return;
     }
     pkg.removePart(hit.partName);
-    pkg.addPart(desiredName, contentType, bytes);
+    pkg.addPart(desiredName, contentType, new Uint8Array(bytes));
     setOpcDefault(pkg, extension, contentType);
     const rootRels = pkg.rootRels() ?? emptyRels();
     const existing = rootRels.items.find((r) => r.id === hit.rId);
@@ -104,7 +104,7 @@ export const setThumbnail = (
 
   // Bootstrap.
   setOpcDefault(pkg, extension, contentType);
-  pkg.addPart(desiredName, contentType, bytes);
+  pkg.addPart(desiredName, contentType, new Uint8Array(bytes));
   const rootRels = pkg.rootRels() ?? emptyRels();
   const rId = nextRelId(rootRels.items.map((r) => r.id));
   rootRels.items.push({

@@ -37,7 +37,7 @@ export const embedImagePart = (
   const extension = extensionForFormat(format);
   const contentType = contentTypeForFormat(format);
   setOpcDefault(pkg, extension, contentType);
-  pkg.addPart(partName(`/ppt/media/image${next}.${extension}`), contentType, bytes);
+  pkg.addPart(partName(`/ppt/media/image${next}.${extension}`), contentType, new Uint8Array(bytes));
   const rels = pkg.getRels(owner) ?? emptyRels();
   const id = nextRelId(rels.items.map((rel) => rel.id));
   rels.items.push({

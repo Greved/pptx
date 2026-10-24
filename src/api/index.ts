@@ -6,6 +6,17 @@
 // `test/tree-shake.test.ts` for the CI guard.
 
 export { type Emu, cm, emu, inches, mm, pt } from './units.ts';
+export { batchSlideMutations } from './fn/slide-mutations.ts';
+export {
+  capturePresentationChanges,
+  getPackagePartInfo,
+  getSlideRenderDependencies,
+} from './fn/presentation-changes.ts';
+export type {
+  PresentationChangeToken,
+  PresentationChanges,
+  PackagePartRevisionInfo,
+} from './fn/presentation-changes.ts';
 
 // Tree-shakeable free-function API.
 export type {

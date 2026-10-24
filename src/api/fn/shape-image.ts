@@ -143,7 +143,7 @@ export const setShapeImage = (
   if (currentExtension === newExtension && !sharedMedia) {
     const part = pkg.getPart(mediaName);
     if (!part) throw new Error(`media part missing: ${mediaName}`);
-    part.data = bytes;
+    part.data = new Uint8Array(bytes);
     part.contentType = newContentType;
   } else {
     let nextN = 1;
@@ -162,7 +162,7 @@ export const setShapeImage = (
     if (!hasDefault) {
       pkg.contentTypes.defaults.push({ extension: newExtension, contentType: newContentType });
     }
-    pkg.addPart(newPartName, newContentType, bytes);
+    pkg.addPart(newPartName, newContentType, new Uint8Array(bytes));
     const target = `../media/image${nextN}.${newExtension}`;
     if (sharedRelationship) {
       const id = nextRelId(rels.items.map((item) => item.id));

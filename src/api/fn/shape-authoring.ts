@@ -208,7 +208,7 @@ export const addSlideImage = (
   if (!hasDefault) {
     pkg.contentTypes.defaults.push({ extension, contentType });
   }
-  pkg.addPart(newMediaName, contentType, bytes);
+  pkg.addPart(newMediaName, contentType, new Uint8Array(bytes));
 
   const rels = pkg.getRels(slide[SLIDE_PART_NAME]) ?? emptyRels();
   const newRId = nextRelId(rels.items.map((r) => r.id));

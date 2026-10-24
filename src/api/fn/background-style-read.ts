@@ -7,11 +7,10 @@ import {
   elem,
   firstChildElement,
   getAttrValue,
-  parseXml,
   qname,
   type XmlElement,
 } from '../../internal/xml/index.ts';
-import { decode } from './_helpers.ts';
+import { readPartRoot } from './_read-part-root.ts';
 import { themeFromPackage, themeRootFromPackage } from './theme.ts';
 
 const element = (root: XmlElement | null, name: string, ns: string = NS.pml): XmlElement | null =>
@@ -32,7 +31,7 @@ export function readBackgroundStyle(pkg: OpcPackage, from: PartName, root: XmlEl
     if (!rel) continue;
     masterName = resolveTarget(masterName, rel.target);
     const part = pkg.getPart(masterName);
-    if (part) roots.push(parseXml(decode(part.data)).root);
+    if (part) roots.push(readPartRoot(part.data));
   }
   let colorMap: Record<string, string> = {};
   let masterColorMap: Record<string, string> = {};

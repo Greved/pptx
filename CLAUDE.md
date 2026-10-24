@@ -1,5 +1,9 @@
 # CLAUDE.md
 
+SlideGet fork contributors must also read the mandatory engineering standard in
+[AGENTS.md](AGENTS.md) before making changes. It adds the fork's typing,
+validation, testing, performance and verification requirements.
+
 ## Project overview
 
 **@office-kit/pptx** is a TypeScript library that generates `.pptx`

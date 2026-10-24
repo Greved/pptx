@@ -10,6 +10,7 @@
 
 // Package-level
 export * from './fn/package-io.ts';
+export * from './fn/presentation-changes.ts';
 export * from './fn/sections.ts';
 export * from './fn/layout-edit.ts';
 export * from './fn/layouts.ts';
@@ -21,6 +22,7 @@ export * from './fn/thumbnail.ts';
 
 // Slide-level
 export * from './fn/slide-query.ts';
+export * from './fn/slide-mutations.ts';
 export * from './fn/custom-shows.ts';
 export * from './fn/slide-deck.ts';
 export * from './fn/slide-placeholder-geometry.ts';

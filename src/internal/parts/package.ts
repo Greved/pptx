@@ -15,6 +15,7 @@
 //     extension isn't already covered. Otherwise `validate()` will surface
 //     the gap.
 
+import type { PackageMutationObserver } from './package-mutation-observer.ts';
 import {
   type ContentTypes,
   type PartName,
@@ -81,6 +82,7 @@ export class OpcPackage {
   private readonly partList: Part[];
   /** Mutable Content_Types map. Direct mutation is allowed. */
   contentTypes: ContentTypes;
+  private observer: PackageMutationObserver | undefined;
   /** Lowercased part name → first part with that name, for `getPart`. */
   private readonly partsByName = new Map<string, Part>();
 
@@ -88,6 +90,15 @@ export class OpcPackage {
     this.partList = parts;
     this.contentTypes = contentTypes;
     this.indexParts();
+  }
+
+  observeMutations(observer: PackageMutationObserver): void {
+    for (const part of this.partList) observer.observePart(part);
+    this.observer = observer;
+  }
+
+  getMutationObserver(): PackageMutationObserver | undefined {
+    return this.observer;
   }
 
   private indexParts(): void {
@@ -172,7 +183,7 @@ export class OpcPackage {
   /**
    * Looks up a part by name (case-insensitive per OPC §9.1.1.7).
    */
-  getPart(name: PartName): Part | null {
+  getPart(name: string): Part | null {
     return this.partsByName.get(name.toLowerCase()) ?? null;
   }
 
@@ -186,8 +197,10 @@ export class OpcPackage {
       throw new Error(`part "${name}" already exists`);
     }
     const part: Part = { name, contentType, data };
+    this.observer?.observePart(part);
     this.partList.push(part);
     this.partsByName.set(name.toLowerCase(), part);
+    this.observer?.changed(name);
     // If neither an existing default nor an existing override covers this
     // content type, register an Override so the on-disk Content_Types stays
     // consistent. Callers can replace the override later if they prefer a
@@ -214,6 +227,7 @@ export class OpcPackage {
       }
     }
     if (removed) {
+      this.observer?.removed(name);
       this.partsByName.delete(name.toLowerCase());
       this.contentTypes.overrides = this.contentTypes.overrides.filter(
         (o) => !partNamesEqual(o.partName, name),
@@ -232,7 +246,10 @@ export class OpcPackage {
     let kept = 0;
     for (const part of this.partList) {
       if (keep(part)) this.partList[kept++] = part;
-      else removed.push(part.name);
+      else {
+        removed.push(part.name);
+        this.observer?.removed(part.name);
+      }
     }
     this.partList.length = kept;
     if (removed.length > 0) {

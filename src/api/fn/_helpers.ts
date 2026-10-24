@@ -65,11 +65,45 @@ export const SLD_ID_MAX = 2147482623;
 // into the package and rebuild the typed view. Free functions, no class
 // dependency.
 
-export const commitSlideData = (slide: SlideData): void => {
+interface SlideMutationBatch {
+  depth: number;
+  dirty: boolean;
+}
+
+const slideMutationBatches = new WeakMap<SlideData, SlideMutationBatch>();
+
+const writeSlideData = (slide: SlideData): void => {
   const xml = serializeXml(slide[SLIDE_DOCUMENT]);
   const part = slide[INTERNAL_PACKAGE].getPart(slide[SLIDE_PART_NAME]);
   if (!part) throw new Error(`slide part missing: ${slide[SLIDE_PART_NAME]}`);
   part.data = encode(xml);
+};
+
+export const commitSlideData = (slide: SlideData): void => {
+  const batch = slideMutationBatches.get(slide);
+  if (batch !== undefined) {
+    batch.dirty = true;
+    return;
+  }
+  writeSlideData(slide);
+};
+
+export const runSlideMutationBatch = <T>(slide: SlideData, fn: () => T): T => {
+  const existing = slideMutationBatches.get(slide);
+  const batch = existing ?? { depth: 0, dirty: false };
+  if (existing === undefined) slideMutationBatches.set(slide, batch);
+  batch.depth++;
+  try {
+    return fn();
+  } finally {
+    batch.depth--;
+    if (batch.depth === 0) {
+      slideMutationBatches.delete(slide);
+      // A thrown callback leaves its completed edits visible to the package
+      // journal, so the caller can detect and roll back that partial change.
+      if (batch.dirty) writeSlideData(slide);
+    }
+  }
 };
 
 export const refreshSlideData = (slide: SlideData): void => {

@@ -77,6 +77,7 @@ import {
 } from './_helpers.ts';
 import { getPresentationTheme } from './theme.ts';
 import { readBackgroundStyle } from './background-style-read.ts';
+import { readPartRoot } from './_read-part-root.ts';
 import { resolveDrawingColor, resolveDrawingColorOpacity } from './shape-color.ts';
 import {
   getSlides,
@@ -498,7 +499,7 @@ export const getSlideMasterBackgroundPatternFill = (
   if (!masterRel) return null;
   const masterPart = pkg.getPart(resolveTarget(layoutPartName, masterRel.target));
   if (!masterPart) return null;
-  const masterRoot = parseXml(decode(masterPart.data)).root;
+  const masterRoot = readPartRoot(masterPart.data);
   const cSld = firstChildElement(masterRoot, NAME_CSLD);
   if (!cSld) return null;
   const bg = firstChildElement(cSld, qname('p', 'bg', NS.pml));
@@ -572,7 +573,7 @@ export const getSlideMasterBackgroundGradientFill = (
   if (!masterRel) return null;
   const masterPart = pkg.getPart(resolveTarget(layoutPartName, masterRel.target));
   if (!masterPart) return null;
-  const masterRoot = parseXml(decode(masterPart.data)).root;
+  const masterRoot = readPartRoot(masterPart.data);
   const context = readBackgroundStyle(pkg, masterPart.name, masterRoot);
   const fill = context.properties ? firstChildElement(context.properties, NAME_A_GRAD_FILL) : null;
   return fill ? parseGradFill(fill, context) : null;
@@ -600,7 +601,7 @@ export const getSlideMasterBackground = (
   if (!masterRel) return { kind: 'inherit' };
   const masterPart = pkg.getPart(resolveTarget(layoutPartName, masterRel.target));
   if (!masterPart) return { kind: 'inherit' };
-  const masterRoot = parseXml(decode(masterPart.data)).root;
+  const masterRoot = readPartRoot(masterPart.data);
   const context = readBackgroundStyle(pkg, masterPart.name, masterRoot);
   return backgroundOfCSld(
     firstChildElement(masterRoot, NAME_CSLD),
@@ -774,7 +775,7 @@ export const getSlideMasterBackgroundImageBytes = (
   const masterPartName = resolveTarget(layoutPartName, masterRel.target);
   const masterPart = pkg.getPart(masterPartName);
   if (!masterPart) return null;
-  const masterRoot = parseXml(decode(masterPart.data)).root;
+  const masterRoot = readPartRoot(masterPart.data);
   const cSld = firstChildElement(masterRoot, NAME_CSLD);
   if (!cSld) return null;
   const bg = firstChildElement(cSld, qname('p', 'bg', NS.pml));
@@ -838,7 +839,7 @@ const effectiveBackgroundElement = (
     ?.items.find((rel) => rel.type === REL_TYPES.slideMaster);
   if (!masterRel) return null;
   const master = pkg.getPart(resolveTarget(layoutName, masterRel.target));
-  const element = master && background(parseXml(decode(master.data)).root);
+  const element = master && background(readPartRoot(master.data));
   return element && master ? { element, part: master.name } : null;
 };
 
@@ -1211,7 +1212,7 @@ export const setSlideBackgroundImage = (
   }
   const newMediaName = partName(`/ppt/media/image${nextN}.${extension}`);
   setOpcDefault(pkg, extension, contentType);
-  pkg.addPart(newMediaName, contentType, bytes);
+  pkg.addPart(newMediaName, contentType, new Uint8Array(bytes));
 
   // Slide → image rel.
   const rels = pkg.getRels(slide[SLIDE_PART_NAME]) ?? emptyRels();

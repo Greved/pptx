@@ -1,0 +1,4 @@
+* text=auto eol=lf
+# Golden package bytes and their extracted XML are fidelity fixtures.
+test/fixtures/** -text
+packages/preview/fonts/** -text

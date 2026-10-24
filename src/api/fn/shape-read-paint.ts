@@ -21,7 +21,6 @@ import {
   type XmlElement,
   firstChildElement,
   getAttrValue,
-  parseXml,
   qname,
 } from '../../internal/xml/index.ts';
 import {
@@ -33,7 +32,7 @@ import {
   SHAPE_SLIDE,
   type SlideShapeData,
 } from '../_internal-symbols.ts';
-import { decode } from './_helpers.ts';
+import { readPartRoot } from './_read-part-root.ts';
 import { getPresentationTheme } from './theme.ts';
 export type ShapeFill =
   | { readonly kind: 'solid'; readonly color: string }
@@ -382,7 +381,7 @@ const effectiveStrokeLineElement = (
   if (!masterRel) return null;
   const masterPart = pkg.getPart(resolveTarget(layoutPartName, masterRel.target));
   if (!masterPart) return null;
-  const masterRoot = parseXml(decode(masterPart.data)).root;
+  const masterRoot = readPartRoot(masterPart.data);
   const { shapes: masterShapes } = readShapeTreeFromCsldRoot(masterRoot, 'sldMaster');
   const masterPh = findPh(masterShapes);
   return masterPh && paintedLine(masterPh);
@@ -600,7 +599,7 @@ export const getShapeFillEffective = (pres: PresentationData, shape: SlideShapeD
   if (!masterRel) return own;
   const masterPart = pkg.getPart(resolveTarget(layoutPartName, masterRel.target));
   if (!masterPart) return own;
-  const masterRoot = parseXml(decode(masterPart.data)).root;
+  const masterRoot = readPartRoot(masterPart.data);
   const { shapes: masterShapes } = readShapeTreeFromCsldRoot(masterRoot, 'sldMaster');
   const masterPh = findPh(masterShapes);
   if (masterPh) {

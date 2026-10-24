@@ -11,13 +11,7 @@
 
 import { partName, resolveTarget } from '../../internal/opc/index.ts';
 import { REL_TYPES } from '../../internal/presentationml/index.ts';
-import {
-  NS,
-  type XmlElement,
-  firstChildElement,
-  parseXml,
-  qname,
-} from '../../internal/xml/index.ts';
+import { NS, type XmlElement, firstChildElement, qname } from '../../internal/xml/index.ts';
 import {
   INTERNAL_PACKAGE,
   LAYOUT_PART_NAME,
@@ -26,7 +20,7 @@ import {
   type SlideData,
   type SlideLayoutData,
 } from '../_internal-symbols.ts';
-import { decode } from './_helpers.ts';
+import { readPartRoot } from './_read-part-root.ts';
 import { resolveDrawingColor, resolveSchemeToken } from './shape-color.ts';
 import { getSlideColorMapOverride } from './slide-background.ts';
 import { themeFromPackage } from './theme.ts';
@@ -86,7 +80,7 @@ const getSlideMasterRoot = (slide: SlideData | SlideLayoutData): XmlElement | nu
     : resolveTarget(layoutPartName, masterRel.target);
   const masterPart = pkg.getPart(masterPartName);
   if (masterPart === null) return null;
-  return parseXml(decode(masterPart.data)).root;
+  return readPartRoot(masterPart.data);
 };
 
 const readClrMapElement = (root: XmlElement): Record<string, string> | null => {
@@ -128,7 +122,7 @@ export const getEffectiveColorMap = (
   const layoutName = getSlideLayoutPartName(slide);
   const layoutPart = layoutName ? slide[INTERNAL_PACKAGE].getPart(layoutName) : null;
   const layoutOverride = layoutPart
-    ? firstChildElement(parseXml(decode(layoutPart.data)).root, qname('p', 'clrMapOvr', NS.pml))
+    ? firstChildElement(readPartRoot(layoutPart.data), qname('p', 'clrMapOvr', NS.pml))
     : null;
   const mapping = layoutOverride
     ? firstChildElement(layoutOverride, qname('a', 'overrideClrMapping', NS.dml))

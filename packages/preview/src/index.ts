@@ -12,6 +12,8 @@
 // (or any SVG rasterizer) can paint — this is what the `/node` entry does.
 
 export { renderSlideSvg as renderSlideToSvg } from './render-slide.ts';
+export { renderSlideSvgResult as renderSlideToSvgResult } from './render-slide.ts';
+export type { SlideSvgResult } from './render-slide.ts';
 export { renderTextEffectsSvg } from './render-slide.ts';
 export { renderSlideLayoutSvg as renderSlideLayoutToSvg } from './render-slide.ts';
 

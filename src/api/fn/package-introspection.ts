@@ -75,8 +75,7 @@ export const readPackagePart = (pres: PresentationData, name: string): Uint8Arra
   // OPC part names compare case-insensitively (ECMA-376 Part 2 §9.1.1), and
   // OpcPackage.getPart already honors that — match it so a caller passing
   // `/ppt/Media/Image1.PNG` resolves the same part the package stores.
-  const target = name.toLowerCase();
-  const part = pres[INTERNAL_PACKAGE].parts.find((p) => p.name.toLowerCase() === target);
+  const part = pres[INTERNAL_PACKAGE].getPart(name);
   return part?.data ?? null;
 };
 
@@ -288,10 +287,9 @@ export const setMediaPartBytes = (
 ): boolean => {
   // Case-insensitive match, consistent with OPC part-name semantics and
   // OpcPackage.getPart (see readPackagePart).
-  const target = partName.toLowerCase();
-  const part = pres[INTERNAL_PACKAGE].parts.find((p) => p.name.toLowerCase() === target);
+  const part = pres[INTERNAL_PACKAGE].getPart(partName);
   if (!part) return false;
-  part.data = bytes;
+  part.data = new Uint8Array(bytes);
   return true;
 };
 

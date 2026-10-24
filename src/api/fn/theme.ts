@@ -17,6 +17,7 @@ import type { OpcPackage, Part } from '../../internal/parts/index.ts';
 import { REL_TYPES } from '../../internal/presentationml/index.ts';
 import { INTERNAL_PACKAGE, type PresentationData } from '../_internal-symbols.ts';
 import { ATTR_R_ID, NAME_SLD_MASTER_ID_LST, PRES_PART_NAME, decode, encode } from './_helpers.ts';
+import { readPartRoot as readRoot } from './_read-part-root.ts';
 
 // ---------------------------------------------------------------------------
 // Theme.
@@ -102,18 +103,6 @@ const readSchemeSlot = (parent: XmlElement, local: string): string => {
  */
 export const getPresentationTheme = (pres: PresentationData): PresentationTheme | null =>
   themeFromPackage(pres[INTERNAL_PACKAGE]);
-
-// Readers share parsed immutable part bytes; writers parse their own document.
-// Replacing a part's bytes naturally invalidates the weakly held snapshot.
-const readRoots = new WeakMap<Uint8Array, XmlElement>();
-const readRoot = (bytes: Uint8Array): XmlElement => {
-  let root = readRoots.get(bytes);
-  if (!root) {
-    root = parseXml(decode(bytes)).root;
-    readRoots.set(bytes, root);
-  }
-  return root;
-};
 
 const resolveRelTarget = (from: PartName, target: string): PartName =>
   target.startsWith('/') ? partName(target) : resolveTarget(from, target);

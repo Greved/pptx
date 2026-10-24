@@ -153,19 +153,19 @@
   {#if selectedVideo && editor.formatPaneTab === 'video'}
     <VideoSection />
   {/if}
-  <div hidden={isShape && editor.formatPaneTab !== 'size'}>
+  {#if !isShape || editor.formatPaneTab === 'size'}
     <ChartSection />
     <TableSection />
     <ImageSection />
-  </div>
+  {/if}
   {#if !selectedVideo || editor.formatPaneTab !== 'video'}
     <BespokeSections tab={isShape && editor.formatPaneTab !== 'video' ? editor.formatPaneTab : 'all'} />
   {/if}
-  <div hidden={isShape && editor.formatPaneTab !== 'size'}>
+  {#if !isShape || editor.formatPaneTab === 'size'}
     <ParagraphSection />
     <ArrangeSection />
     <AnimationSection />
-  </div>
+  {/if}
 
   {#if !selectedVideo || editor.formatPaneTab !== 'video'}
   <div class="all">
@@ -193,6 +193,7 @@
   {/if}{/snippet}
 
 <div class="panel ok-scroll" class:background-pane={backgroundPane} hidden={!editor.propertiesPaneVisible}>
+  {#if editor.propertiesPaneVisible}
   <div class="panel-head">
     <strong>{selLabel}</strong>
           <button class="close-pane" aria-label={t(backgroundPane ? 'Close Format Background' : selectedVideo ? 'Close Format Video' : 'Close Format Shape')} title={t(backgroundPane ? 'Close Format Background' : selectedVideo ? 'Close Format Video' : 'Close Format Shape')} onclick={(event) => {
@@ -259,6 +260,7 @@
 
     {/if}
   </div>
+  {/if}
 </div>
 
 <style>

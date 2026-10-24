@@ -24,7 +24,7 @@
     if (stored !== open) editor.formatPaneSections = { ...editor.formatPaneSections, [id]: open };
   }}>
   <summary>{label}</summary>
-  <div class="pane-fields">{@render children()}</div>
+  {#if stored}<div class="pane-fields">{@render children()}</div>{/if}
 </details>
 
 <style>

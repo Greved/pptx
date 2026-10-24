@@ -3,6 +3,7 @@ import { textColumnsStyle, verticalTextStyle } from './text-body-style.ts';
 import { textUnderlineStyle } from './text-underline-style.ts';
 import { paragraphNumberLabels } from './paragraph-number-labels.ts';
 import { decimalSeparatorOf } from './decimal-separator.ts';
+import { renderRootFragment } from './root-fragment-cache.ts';
 // Per-slide SVG renderer for the playground.
 //
 // @office-kit/pptx does not ship a full DrawingML renderer — that would be a
@@ -141,6 +142,9 @@ import {
   getSlideShapes,
   isShapeHidden,
   getSlideSize,
+  getSlidePartName,
+  getSlideRenderDependencies,
+  getPackagePartInfo,
   getTableCellAnchor,
   getTableCellTextDirection,
   getTableCellText3D,
@@ -236,7 +240,17 @@ interface LayoutCtx {
   readonly ownShapes: boolean;
   readonly background: { id: string; width: number; height: number };
   readonly inverseGroupTransform: string;
+  readonly browserMetrics?: { used: boolean };
 }
+
+/** Track only measurements actually consumed by SVG-positioned browser text. */
+const browserMeasurerFor = (ctx: LayoutCtx): TextMeasurer => {
+  const measure = browserTextMeasurer() ?? ctx.measure;
+  return (text, spec) => {
+    if (ctx.browserMetrics) ctx.browserMetrics.used = true;
+    return measure(text, spec);
+  };
+};
 
 const clickActionHref = (
   pres: PresentationData,
@@ -2791,7 +2805,7 @@ const renderTextBody = (
       innerY: vInnerY,
       innerW: vInnerW,
       innerH: vInnerH,
-      measure: ctx.mode === 'svg' ? ctx.measure : (browserTextMeasurer() ?? ctx.measure),
+      measure: ctx.mode === 'svg' ? ctx.measure : browserMeasurerFor(ctx),
       ...(ctx.mode === 'foreignObject' ? BROWSER_FAMILIES : { resolveFamily: ctx.resolveFamily }),
       vert: svgVert,
       columns: svgColumns,
@@ -2907,7 +2921,7 @@ const renderTextBody = (
       innerY: rY,
       innerW: rW,
       innerH: rH,
-      measure: browserTextMeasurer() ?? ctx.measure,
+      measure: browserMeasurerFor(ctx),
       vert: svgVert,
       columns: null,
       effectsOnly: true,
@@ -5922,7 +5936,7 @@ const renderTableCellText = (
     innerY: innerY * EMU_PER_PX,
     innerW: innerW * EMU_PER_PX,
     innerH: innerH * EMU_PER_PX,
-    measure: ctx.mode === 'svg' ? ctx.measure : (browserTextMeasurer() ?? ctx.measure),
+    measure: ctx.mode === 'svg' ? ctx.measure : browserMeasurerFor(ctx),
     ...(ctx.mode === 'foreignObject' ? BROWSER_FAMILIES : { resolveFamily: ctx.resolveFamily }),
     vert: verticalLayoutOf(getTableCellTextDirection(cell)),
     columns: null,
@@ -7296,7 +7310,24 @@ export const renderSlideSvg = (
   pres: PresentationData,
   slide: SlideData,
   opts: RenderSlideOptions = {},
-): string => renderSurface(pres, { slide, layout: getSlideLayout(slide), master: false }, opts);
+): string => renderSlideSvgResult(pres, slide, opts).svg;
+
+/** Renderer-owned SVG boundaries for consumers that retain unchanged root objects. */
+export interface SlideSvgResult {
+  readonly svg: string;
+  readonly opening: string;
+  /** Background/decorations followed by one fragment per top-level slide object. */
+  readonly fragments: readonly string[];
+  /** Font loading can change measured glyph positions without changing package parts. */
+  readonly dependsOnBrowserFontMetrics: boolean;
+}
+
+export const renderSlideSvgResult = (
+  pres: PresentationData,
+  slide: SlideData,
+  opts: RenderSlideOptions = {},
+): SlideSvgResult =>
+  renderSurface(pres, { slide, layout: getSlideLayout(slide), master: false }, opts);
 
 /**
  * Draws a slide layout — or, with `master`, its slide master — the way
@@ -7310,13 +7341,13 @@ export const renderSlideLayoutSvg = (
   pres: PresentationData,
   layout: SlideLayoutData,
   opts: RenderSlideOptions & { readonly master?: boolean } = {},
-): string => renderSurface(pres, { slide: null, layout, master: opts.master ?? false }, opts);
+): string => renderSurface(pres, { slide: null, layout, master: opts.master ?? false }, opts).svg;
 
 const renderSurface = (
   pres: PresentationData,
   surface: Surface,
   opts: RenderSlideOptions,
-): string => {
+): SlideSvgResult => {
   const { slide, master } = surface;
   const size = getSlideSize(pres) ?? DEFAULT_SIZE;
   const W = size.width as number;
@@ -7338,6 +7369,7 @@ const renderSurface = (
     ownShapes: true,
     background: { id: '', width: W / EMU_PER_PX, height: H / EMU_PER_PX },
     inverseGroupTransform: '',
+    browserMetrics: { used: false },
   };
 
   let bg: ReturnType<typeof getSlideBackground> = slide
@@ -7495,14 +7527,56 @@ const renderSurface = (
     }
   }
 
-  const shapesSvg = topLevelShapes(slide ? getSlideShapes(slide) : [], { dropPlaceholders: false })
-    .map((s) => renderShape(s, pres, theme, ctx))
-    .join('');
+  const cacheRoots =
+    slide !== null &&
+    opts.measureText === undefined &&
+    opts.resolveFamily === undefined &&
+    opts.textLayout === undefined &&
+    opts.background === undefined &&
+    (bg.kind === 'solid' || bg.kind === 'inherit');
+  const slidePart = slide ? getSlidePartName(slide) : '';
+  const rootRevision =
+    cacheRoots && slide
+      ? JSON.stringify({
+          dependencies: getSlideRenderDependencies(slide)
+            .filter((name) => name.toLowerCase() !== slidePart.toLowerCase())
+            .map((name) => [name, getPackagePartInfo(pres, name)?.revision]),
+          width: W,
+          height: H,
+          colorMap: activeColorMap,
+          textColor: activeDeckTextColor,
+          number: activeSlideNumber,
+          background: bg,
+        })
+      : '';
+  const shapeFragments = topLevelShapes(slide ? getSlideShapes(slide) : [], {
+    dropPlaceholders: false,
+  }).map((s, index) => {
+    if (!cacheRoots) return renderShape(s, pres, theme, ctx);
+    // Background fills carry a lazily allocated per-render definition id.
+    // Rebuild their whole root, including any group descendants using it.
+    const pending = [s];
+    while (pending.length > 0) {
+      const member = pending.pop();
+      if (!member) break;
+      if (getShapeFillEffective(pres, member).kind === 'background')
+        return renderShape(s, pres, theme, ctx);
+      pending.push(...getGroupChildren(member));
+    }
+    return renderRootFragment(
+      pres,
+      `${slidePart}:${index}`,
+      rootRevision,
+      getShapeXmlString(s),
+      () => renderShape(s, pres, theme, ctx),
+      () => ctx.browserMetrics?.used !== true,
+    );
+  });
 
   const backgroundSvg = `${bgOpacity === undefined ? '' : `<rect width="${E(W)}" height="${E(H)}" fill="#FFFFFF"/>`}<rect width="${E(W)}" height="${E(H)}" fill="${bgColor}"${bgOpacityAttr}/>${bgGradient}${bgImage}`;
 
-  return [
-    `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 ${E(W)} ${E(H)}" preserveAspectRatio="xMidYMid meet">`,
+  const opening = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 ${E(W)} ${E(H)}" preserveAspectRatio="xMidYMid meet">`;
+  const background = [
     bgGradientDefs,
     // A shape with a background fill still references the definition when the
     // surface itself is left transparent.
@@ -7512,9 +7586,14 @@ const renderSurface = (
         ? backgroundSvg
         : '',
     layoutBgShapes,
-    shapesSvg,
-    '</svg>',
   ].join('');
+  const fragments = [background, ...shapeFragments];
+  return {
+    opening,
+    fragments,
+    svg: opening + fragments.join('') + '</svg>',
+    dependsOnBrowserFontMetrics: ctx.browserMetrics?.used === true,
+  };
 };
 
 // Minimal magic-byte sniffer covering the formats we already know how

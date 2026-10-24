@@ -8,8 +8,7 @@ import {
   themeRootFromPackage,
   type PresentationTheme,
 } from './theme.ts';
-import { getSlideLayout } from './shape-slide-read.ts';
-import { resolveTarget } from '../../internal/opc/index.ts';
+import { resolveTarget, type PartName } from '../../internal/opc/index.ts';
 import { REL_TYPES } from '../../internal/presentationml/index.ts';
 import {
   NS,
@@ -25,7 +24,7 @@ import {
   SHAPE_ELEMENT,
   SHAPE_SLIDE,
   type PresentationData,
-  LAYOUT_PART_NAME,
+  SLIDE_PART_NAME,
   type SlideShapeData,
 } from '../_internal-symbols.ts';
 
@@ -47,6 +46,17 @@ type ShapeStyleTheme = {
   readonly theme: PresentationTheme | null;
 };
 
+const shapeLayoutPartName = (shape: SlideShapeData): PartName | null => {
+  const slide = shape[SHAPE_SLIDE];
+  const pkg = slide[INTERNAL_PACKAGE];
+  const rel = pkg
+    .getRels(slide[SLIDE_PART_NAME])
+    ?.items.find((item) => item.type === REL_TYPES.slideLayout && item.targetMode !== 'External');
+  if (!rel) return null;
+  const name = resolveTarget(slide[SLIDE_PART_NAME], rel.target);
+  return pkg.getPart(name) === null ? null : name;
+};
+
 /**
  * Returns the theme attached to the shape's owning slide master. A package
  * can contain multiple slide masters with different themes; using the first
@@ -57,9 +67,8 @@ export const getShapeStyleTheme = (
   shape: SlideShapeData,
 ): ShapeStyleTheme => {
   const pkg = pres[INTERNAL_PACKAGE];
-  const layout = getSlideLayout(shape[SHAPE_SLIDE]);
-  if (layout) {
-    const layoutName = layout[LAYOUT_PART_NAME];
+  const layoutName = shapeLayoutPartName(shape);
+  if (layoutName !== null) {
     const masterRel = pkg
       .getRels(layoutName)
       ?.items.find((item) => item.type === REL_TYPES.slideMaster && item.targetMode !== 'External');

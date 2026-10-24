@@ -33,7 +33,8 @@ import {
   savePresentation,
 } from '@office-kit/pptx';
 import type { RememberedFill } from './remembered-fill.ts';
-import { renderSlideToSvg } from '@office-kit/pptx-preview';
+import { renderSlidePaintCached } from './slide-render-cache.ts';
+import type { SlideSvgResult } from '@office-kit/pptx-preview';
 import type { CustomShow, PresentationData, SlideData, SlideShapeData } from '@office-kit/pptx';
 import type { ChangeSource } from './change-source.ts';
 import type { ExternalHistoryAdapter } from './external-history.ts';
@@ -116,16 +117,20 @@ export class EditorDocument {
     return list[idx] ?? list[0] ?? null;
   });
 
-  currentSvg = $derived.by<string>(() => {
+  currentPaint = $derived.by<SlideSvgResult | string>(() => {
     this.version;
     const slide = this.currentSlide;
     if (!slide) return '';
     try {
-      return renderSlideToSvg(this.pres, slide);
+      return renderSlidePaintCached(this.pres, slide);
     } catch (err) {
       return `<!-- render error: ${(err as Error).message} -->`;
     }
   });
+
+  currentSvg = $derived(
+    typeof this.currentPaint === 'string' ? this.currentPaint : this.currentPaint.svg,
+  );
 
   canUndo = $derived.by(() => {
     void this.committedVersion;

@@ -325,7 +325,9 @@ export const readZip = (input: Uint8Array): ZipReadResult => {
       if (compressedSize !== uncompressedSize) {
         throw invalid(`stored entry "${name}" has mismatched sizes`);
       }
-      entries.push({ name, data: compressed.slice() });
+      // Uint8Array subclasses such as Node Buffer return a view from slice().
+      // The loaded package must own stored entries after the caller reuses its archive.
+      entries.push({ name, data: new Uint8Array(compressed) });
     } else if (method === METHOD_DEFLATE) {
       entries.push({ name, data: inflateEntry(compressed, uncompressedSize, name) });
     } else {

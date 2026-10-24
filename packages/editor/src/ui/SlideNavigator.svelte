@@ -5,9 +5,11 @@
   // undo/redo like everything else.
   import { getEditor } from '../core/context.ts';
   import { activeElementOf } from '../core/dom-root.ts';
-  import { renderSlideToSvg } from '@office-kit/pptx-preview';
   import { getSlideSize, isSlideHidden } from '@office-kit/pptx';
-  import { tick } from 'svelte';
+  import { onMount, tick, untrack } from 'svelte';
+  import { renderSlidePaintCached } from '../core/slide-render-cache.ts';
+  import type { SlideSvgResult } from '@office-kit/pptx-preview';
+  import { svgPaint } from '../canvas/svg-paint.ts';
   import { selectedSlideIndices } from '../core/selection.ts';
   import { sectionRanges } from '../core/sections.ts';
   import { t } from '../i18n/i18n.svelte.ts';
@@ -21,22 +23,57 @@
   const SORTER_THUMB_AT_100 = 250;
   const editor = getEditor();
   const doc = editor.doc;
-  const sectionStarts = $derived.by(() => { doc.version; return new Map(sectionRanges(doc.pres).map(range => [range.start, range.name])); });
+  const navigationSlides = $derived.by(() => { doc.committedVersion; return untrack(() => doc.slides); });
+  const sectionStarts = $derived.by(() => { doc.committedVersion; return untrack(() => new Map(sectionRanges(doc.pres).map(range => [range.start, range.name]))); });
   const selected = $derived(selectedSlideIndices(doc.selection));
   const firstSelected = $derived(selected[0] ?? 0);
 
-  const skippedSlides = $derived.by(() => { doc.version; return doc.slides.map(isSlideHidden); });
-  const size = $derived.by(() => { doc.version; return getSlideSize(doc.pres); });
+  const skippedSlides = $derived.by(() => { doc.committedVersion; return untrack(() => navigationSlides.map(isSlideHidden)); });
+  const size = $derived.by(() => { doc.committedVersion; return untrack(() => getSlideSize(doc.pres)); });
 
-  function thumb(index: number): { svg: string; error: string } {
-    doc.version; // reactive
-    const slide = doc.slideAt(index);
-    if (!slide) return { svg: '', error: '' };
-    try {
-      return { svg: renderSlideToSvg(doc.pres, slide), error: '' };
-    } catch (error) {
-      return { svg: '', error: error instanceof Error ? error.message : String(error) };
-    }
+  type Preview = { paint: SlideSvgResult | string; error: string };
+  let visibleSlides = $state.raw<ReadonlySet<number>>(new Set());
+  const thumbnailRows = new Map<Element, number>();
+  let observer: IntersectionObserver | undefined;
+
+  // All rows stay in the layout for section headers, sorter keyboard navigation,
+  // drag/drop and focus; only the costly SVG subtree is viewport bounded.
+  function observeThumbnail(node: HTMLElement, index: number) {
+    thumbnailRows.set(node, index);
+    observer?.observe(node);
+    return { destroy() {
+      observer?.unobserve(node);
+      thumbnailRows.delete(node);
+      const next = new Set(visibleSlides);
+      next.delete(index);
+      visibleSlides = next;
+    } };
+  }
+
+  onMount(() => {
+    observer = new IntersectionObserver(entries => {
+      const next = new Set(visibleSlides);
+      for (const entry of entries) {
+        const index = thumbnailRows.get(entry.target);
+        if (index === undefined) continue;
+        if (entry.isIntersecting) next.add(index);
+        else next.delete(index);
+      }
+      visibleSlides = next;
+    }, { root: rail, rootMargin: '160px' });
+    for (const row of thumbnailRows.keys()) observer.observe(row);
+    return () => { observer?.disconnect(); observer = undefined; };
+  });
+
+  function thumb(index: number): Preview | undefined {
+    doc.committedVersion;
+    if (!visibleSlides.has(index)) return undefined;
+    return untrack(() => {
+      const slide = doc.slideAt(index);
+      if (!slide) return undefined;
+      try { return { paint: renderSlidePaintCached(doc.pres, slide), error: '' }; }
+      catch (error) { return { paint: '', error: error instanceof Error ? error.message : String(error) }; }
+    });
   }
 
   async function focusSlide(index: number, range = false, preserve = false) {
@@ -109,11 +146,12 @@
 <div class="nav ok-scroll" class:sorter={mode === 'sorter'} style:--sorter-thumb={`${Math.round(SORTER_THUMB_AT_100 * editor.sorterZoom)}px`} bind:this={rail}>
   {#if doc.selection.kind === 'slide' && selected.length > 1}<div class="selection-count" aria-live="polite">{t('Selected slides')}: {selected.length}</div>{/if}
 
-  {#each doc.slides as _slide, i (i)}
+  {#each navigationSlides as _slide, i (i)}
     {@const preview = thumb(i)}
     {#if sectionStarts.has(i)}<div class="section-header" role="heading" aria-level="2">{sectionStarts.get(i)}</div>{/if}
     <div
       class="thumb-row"
+      use:observeThumbnail={i}
       class:active={doc.selection.kind === 'slide' ? selected.includes(i) : doc.selection.slideIndex === i}
       class:skipped={skippedSlides[i]}
       draggable="true"
@@ -155,7 +193,7 @@
     >
       <span class="num">{i + 1}{#if skippedSlides[i]}<span class="skip-mark" aria-label={t('Skipped during presentation')}>⊘</span>{/if}</span>
       <div class="thumb" style:aspect-ratio={size ? `${size.width} / ${size.height}` : '16 / 9'}>
-        {#if preview.error}<span class="render-error" title={preview.error}>{t('Preview unavailable')}</span>{:else}{@html preview.svg}{/if}
+        {#if preview?.error}<span class="render-error" title={preview.error}>{t('Preview unavailable')}</span>{:else if preview}<div class="thumbnail-paint" use:svgPaint={preview.paint}></div>{/if}
       </div>
     </div>
   {/each}
@@ -179,6 +217,7 @@
   }
   .section-header { grid-column: 1 / -1; padding: 6px 4px 2px; font-size: 11px; font-weight: 600; color: var(--ok-text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .render-error { font-size: 11px; color: var(--ok-text-2); }
+  .thumbnail-paint { width: 100%; height: 100%; }
   .thumb-row:focus-visible { outline: 2px solid var(--ok-selected-border); outline-offset: 1px; }
   .thumb-row {
     display: flex;
