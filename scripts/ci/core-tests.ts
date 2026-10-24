@@ -14,13 +14,17 @@ const expected = [
 ];
 const report = resolve('.probe/ci/core.json');
 await mkdir(resolve('.probe/ci'), { recursive: true });
+// The opt-in native Windows font scan competes with other suite workers for
+// hosted-runner I/O and memory. Isolate it without changing tests or deadlines.
+const workers = process.platform === 'win32' ? 1 : 2;
+console.log(`Running the complete core suite with ${workers} worker(s)`);
 const exitCode = await new Promise<number | null>((done, reject) => {
   const child = spawn(
     process.execPath,
     [
       fileURLToPath(new URL('./vitest.mjs', import.meta.resolve('vitest/package.json'))),
       'run',
-      '--maxWorkers=2',
+      `--maxWorkers=${workers}`,
       '--reporter=default',
       '--reporter=json',
       `--outputFile.json=${report}`,
