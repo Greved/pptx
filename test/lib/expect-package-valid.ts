@@ -13,11 +13,7 @@ import {
   savePresentation,
   validatePresentation,
 } from '../../src/api/index.ts';
-import {
-  expectSchemaValidAll,
-  isSchemaValidationAvailable,
-  type SchemaKind,
-} from './expect-schema-valid.ts';
+import { expectSchemaValidAll, type SchemaKind } from './expect-schema-valid.ts';
 
 const decoder = new TextDecoder();
 
@@ -31,8 +27,7 @@ const schemaKind = (name: string, contentType: string): SchemaKind | null => {
 export const expectPackageValid = async (pres: PresentationData): Promise<PresentationData> => {
   const reloaded = await loadPresentation(await savePresentation(pres));
   expect(validatePresentation(reloaded)).toEqual([]);
-  if (!isSchemaValidationAvailable()) return reloaded;
-  // One xmllint run per schema: a package has dozens of parts.
+  // Reuse each compiled schema across the package's parts.
   const documents = new Map<SchemaKind, { name: string; xml: string }[]>();
   for (const part of listPackageParts(reloaded)) {
     const kind = schemaKind(part.name, part.contentType);

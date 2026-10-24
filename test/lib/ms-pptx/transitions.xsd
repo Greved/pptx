@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- One entry point for xmllint over the three [MS-PPTX] transition namespaces. -->
+<!-- One schema entry point for the three [MS-PPTX] transition namespaces. -->
 <xsd:schema xmlns:xsd="http://www.w3.org/2001/XMLSchema">
   <xsd:import namespace="http://schemas.microsoft.com/office/powerpoint/2010/main"
     schemaLocation="p14-transitions.xsd"/>

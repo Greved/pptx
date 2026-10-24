@@ -10,7 +10,7 @@ import { setTimeout } from 'node:timers/promises';
 import { buildDeck, initProject, inspectTemplate } from '../dist/index.mjs';
 
 const execute = promisify(execFile);
-const cli = new URL('../dist/cli.mjs', import.meta.url).pathname;
+const cli = fileURLToPath(new URL('../dist/cli.mjs', import.meta.url));
 // Anchored to this file, not the cwd: the suite runs both from the repo root
 // and from `packages/dev` (`pnpm --filter ... test`).
 const devModules = fileURLToPath(new URL('../node_modules', import.meta.url));
@@ -23,7 +23,11 @@ async function fixture(t) {
 test('initialized TSX typechecks, builds, and uses source-relative assets in imported modules', async (t) => {
   const directory = await fixture(t);
   const project = await initProject(join(directory, 'slides'));
-  await symlink(devModules, join(project, 'node_modules'), 'dir');
+  await symlink(
+    devModules,
+    join(project, 'node_modules'),
+    process.platform === 'win32' ? 'junction' : 'dir',
+  );
   await execute(process.execPath, [join(devModules, 'typescript/bin/tsc'), '--project', project]);
   const deck = join(project, 'deck.tsx');
   const result = await buildDeck(deck);
@@ -107,7 +111,7 @@ export default <Presentation><Slide><Text x={1} y={1} width={4} height={1}>${tex
   await writeFile(deck, source('Before edit'));
   const workerDirectory = await fixture(t);
   const child = spawn(process.execPath, [cli, 'dev', deck, '--port', '0'], {
-    env: { ...process.env, TMPDIR: workerDirectory },
+    env: { ...process.env, TMPDIR: workerDirectory, TEMP: workerDirectory, TMP: workerDirectory },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   t.after(() => {
@@ -237,7 +241,11 @@ test('check does not fail text that only spills into its box insets', async () =
 test('check passes the starter deck and fails text that overflows or is too small', async (t) => {
   const directory = await fixture(t);
   const project = await initProject(join(directory, 'slides'));
-  await symlink(devModules, join(project, 'node_modules'), 'dir');
+  await symlink(
+    devModules,
+    join(project, 'node_modules'),
+    process.platform === 'win32' ? 'junction' : 'dir',
+  );
   const manifest = JSON.parse(await readFile(join(project, 'package.json'), 'utf8'));
   assert.equal(manifest.scripts.check, 'tsc --noEmit && office-pptx check deck.tsx');
   const passed = await execute(process.execPath, [cli, 'check', join(project, 'deck.tsx')]);

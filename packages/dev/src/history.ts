@@ -26,7 +26,11 @@ type Entry = { label: string; changes: Change[] };
 const equal = (a?: Buffer, b?: Buffer) => a === b || (!!a && !!b && a.equals(b));
 
 /** Session-local project history. Overlapping agent turns form one transaction. */
-export async function createHistory(directory: string, notify: () => void = () => {}) {
+export async function createHistory(
+  directory: string,
+  notify: () => void = () => {},
+  files: { writeFile: typeof writeFile } = { writeFile },
+) {
   const root = await realpath(directory);
   let baseline: Snapshot = new Map();
   let initialized = false;
@@ -142,7 +146,7 @@ export async function createHistory(directory: string, notify: () => void = () =
     // The `.tmp` suffix is outside `historyFile`, so snapshots never record it.
     const temporary = `${file}.${randomUUID()}.tmp`;
     try {
-      await writeFile(temporary, next, { flag: 'wx' });
+      await files.writeFile(temporary, next, { flag: 'wx' });
       const mode = await lstat(file).then(
         (info) => info.mode,
         (cause: NodeJS.ErrnoException) => {

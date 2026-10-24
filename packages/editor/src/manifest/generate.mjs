@@ -24,12 +24,18 @@
 // Run: `node packages/editor/src/manifest/generate.mjs` (`--check` only compares)
 import { spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..', '..', '..', '..');
+const formatter = join(
+  dirname(createRequire(import.meta.url).resolve('oxfmt/package.json')),
+  'bin',
+  'oxfmt',
+);
 const srcRoot = join(repoRoot, 'src');
 const apiIndex = join(srcRoot, 'api', 'index.ts');
 
@@ -785,11 +791,11 @@ const stale = [];
 function write(file, text) {
   const path = join(here, file);
   // Formatted as `format:check` wants it, so regenerating never fails that.
-  const formatted = spawnSync(
-    join(repoRoot, 'node_modules', '.bin', 'oxfmt'),
-    [`--stdin-filepath=${path}`],
-    { input: text, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
-  );
+  const formatted = spawnSync(process.execPath, [formatter, `--stdin-filepath=${path}`], {
+    input: text,
+    encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024,
+  });
   if (formatted.status !== 0)
     throw new Error(`oxfmt failed on ${path} (exit ${formatted.status}): ${formatted.stderr}`);
   if (!check) writeFileSync(path, formatted.stdout);

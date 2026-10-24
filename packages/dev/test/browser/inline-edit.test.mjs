@@ -3,8 +3,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, readFile, rm, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 
 test(
@@ -29,7 +30,7 @@ const fs=require('node:fs');let input='';process.stdin.on('data',d=>input+=d);pr
         '--port',
         '0',
       ],
-      { env: { ...process.env, PATH: dir + ':' + process.env.PATH } },
+      { env: { ...process.env, PATH: [dir, process.env.PATH].filter(Boolean).join(delimiter) } },
     );
     let browser;
     try {
@@ -168,7 +169,11 @@ const fs=require('node:fs');let input='';process.stdin.on('data',d=>input+=d);pr
       assert.deepEqual(errors, []);
     } finally {
       await browser?.close();
-      proc.kill('SIGTERM');
+      if (proc.exitCode === null && proc.signalCode === null) {
+        const exited = once(proc, 'exit');
+        proc.kill('SIGTERM');
+        await exited;
+      }
       await rm(dir, { recursive: true, force: true });
     }
   },

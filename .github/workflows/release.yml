@@ -36,6 +36,9 @@ permissions:
   pull-requests: write # open the "Version Packages" PR
   id-token: write # OIDC for npm provenance
 
+env:
+  NODE_OPTIONS: --no-experimental-webstorage
+
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
@@ -51,12 +54,8 @@ jobs:
 
       # Same test prerequisites as the CI test job; without them `pnpm test`
       # fails here and nothing is ever released.
-      - name: Fetch ECMA-376 schemas for enum domain tests
-        run: git submodule update --init --depth 1 references/ecma-376-5th
-
-      - name: Install XML schema validator
-        timeout-minutes: 12
-        run: .github/scripts/retry.sh 180 bash -c 'sudo apt-get update && sudo apt-get install -y --no-install-recommends libxml2-utils'
+      - name: Fetch pinned schemas and reference corpus
+        run: git submodule update --init --depth 1 references/ecma-376-5th references/PptxGenJS
 
       - uses: pnpm/action-setup@v6
 
@@ -74,6 +73,7 @@ jobs:
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
+      - run: pnpm test:xml:infrastructure
 
       # Run the gates one more time before publishing — the release workflow is
       # the last line of defense. These builds are also what gets published:
@@ -82,14 +82,14 @@ jobs:
       # delete its `dist` while pptx-dev is bundling the editor from it.
       - run: pnpm typecheck
       - run: pnpm lint
-      - run: pnpm test
+      - run: pnpm exec node scripts/ci/core-tests.ts
       - run: pnpm build
       - run: pnpm --filter @office-kit/pptx-dev... build
       - run: pnpm --filter @office-kit/pptx-dsl typecheck
       - run: pnpm --filter @office-kit/pptx-editor typecheck
-      - run: pnpm --filter @office-kit/pptx-editor test
+      - run: pnpm exec node scripts/ci/node-tests.ts editor-unit
       - run: pnpm --filter @office-kit/pptx-dev typecheck
-      - run: pnpm --filter @office-kit/pptx-dev test
+      - run: pnpm exec node scripts/ci/node-tests.ts dev-unit
 
       - name: Create Release PR or publish to npm
         id: changesets

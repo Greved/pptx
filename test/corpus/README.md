@@ -28,9 +28,9 @@ corpus doesn't yet cover.)
 ## What it checks
 
 1. **Hard gate — schema validity.** Every slide @office-kit/pptx emits is validated
-   against the ECMA-376 PresentationML XSD (`xmllint`), and every chart part
-   against the chart XSD. A real structural defect fails the build. Skipped
-   cleanly when `xmllint` is absent.
+   against the ECMA-376 PresentationML XSD (libxml2 WebAssembly), and every chart
+   part against the chart XSD. A structural defect or missing schema import fails
+   the build. Validation runs on Windows, Linux and macOS without an OS XML tool.
 
 2. **Ratchet — divergence from the reference.** Both slides are reduced to a
    canonical drawing tree (`canonical.ts`) with _legitimately volatile_ detail
@@ -60,18 +60,20 @@ per-case diff (`-` @office-kit/pptx, `+` PptxGenJS).
 
 ## Prerequisites
 
-The PptxGenJS reference is a submodule with its own (un-typed) CJS bundle plus
-`jszip`:
+The PptxGenJS reference is a pinned submodule with its own CJS bundle. Its exact
+`jszip` dependency and the portable XML validator are root development dependencies:
 
 ```bash
 git submodule update --init references/PptxGenJS
-npm --prefix references/PptxGenJS install jszip
+git submodule update --init references/ecma-376-5th
+pnpm install --frozen-lockfile
+pnpm test:xml:infrastructure
 ```
 
-When the submodule isn't checked out (e.g. a clean CI job), the suite
-**skips itself** rather than failing — `xmllint`-gated schema validation of
-@office-kit/pptx's own output lives in `test/fn-create-presentation.test.ts` and the
-`l3-*` suites regardless.
+CI checks both pinned submodules and the required XML infrastructure before
+running every corpus case. Missing reference tools or unexpectedly skipped suites
+fail the CI inventory gate. Schema validation of the library's own output also
+lives in `test/fn-create-presentation.test.ts` and the `l3-*` suites.
 
 ## Current state — full parity
 

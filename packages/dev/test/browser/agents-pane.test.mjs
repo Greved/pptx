@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import test from 'node:test';
 import { chromium } from 'playwright';
 import { startPreview } from '../helpers/server.mjs';
@@ -31,9 +31,12 @@ process.stdin.on('data', () => {});
     let browser;
     try {
       preview = await startPreview(file, {
-        env: { ...process.env, PATH: dir + ':' + process.env.PATH },
+        env: { ...process.env, PATH: [dir, process.env.PATH].filter(Boolean).join(delimiter) },
       });
-      browser = await chromium.launch({ headless: true });
+      browser = await chromium.launch({
+        channel: process.env.PLAYWRIGHT_CHANNEL || undefined,
+        headless: true,
+      });
       const context = await browser.newContext({
         viewport: { width: 1400, height: 900 },
         colorScheme: 'light',
@@ -82,7 +85,7 @@ process.stdin.on('data', () => {});
       const terminalRed = () =>
         agentFrame.evaluate(() => {
           const span = [...document.querySelectorAll('.xterm-rows span')].find(
-            (node) => node.textContent === 'Red output',
+            (node) => node.textContent.trimEnd() === 'Red output',
           );
           return span && getComputedStyle(span).color;
         });
@@ -109,7 +112,8 @@ process.stdin.on('data', () => {});
       await agentFrame.waitForFunction(
         (red) =>
           [...document.querySelectorAll('.xterm-rows span')].some(
-            (node) => node.textContent === 'Red output' && getComputedStyle(node).color === red,
+            (node) =>
+              node.textContent.trimEnd() === 'Red output' && getComputedStyle(node).color === red,
           ),
         RED.dark,
       );

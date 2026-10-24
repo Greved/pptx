@@ -1,5 +1,6 @@
 import type { VisualReview } from './visual-review.ts';
 import { authoringGuidance } from './authoring-guidance.ts';
+import { resolveCliCommand } from './cli-command.ts';
 import MarkdownIt from 'markdown-it';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
@@ -85,6 +86,7 @@ export function createChat(
     images: string[] = [],
     reviewing = false,
   ) {
+    const command = resolveCliCommand(selected, process.env, dirname(resolve(entry)));
     if (!repairs && !reviewing) review?.begin();
     provider = selected;
     const user: Message = { role: 'user', text, context };
@@ -110,7 +112,7 @@ Current request and preview context (JSON): ${JSON.stringify(user)}`;
     stopping = false;
     const args = ['exec', '--json', '--sandbox', 'workspace-write', '--skip-git-repo-check', '-'];
     for (const image of images) args.splice(args.length - 1, 0, '--image', image);
-    child = spawn(selected, args, {
+    child = spawn(command.file, [...command.args, ...args], {
       cwd: dirname(resolve(entry)),
       stdio: ['pipe', 'pipe', 'pipe'],
       detached: process.platform !== 'win32',
@@ -182,6 +184,7 @@ Current request and preview context (JSON): ${JSON.stringify(user)}`;
           status = 'Verifying preview…';
           notify();
           let buildError: string | null;
+          let restartFailure = '';
           try {
             buildError = await verify();
           } catch (cause) {
@@ -189,17 +192,24 @@ Current request and preview context (JSON): ${JSON.stringify(user)}`;
           }
           if (!stopping && buildError && repairs < 3) {
             child = undefined;
-            start(
-              `The actual preview build failed. Repair the source and preserve unrelated work (attempt ${repairs + 1}/3). Do not remove requested content or hide the error.\n${buildError.slice(0, 16000)}`,
-              selected,
-              { ...context, buildError },
-              repairs + 1,
-              [],
-              reviewing,
-            );
-            await completion;
-            done();
-            return;
+            try {
+              start(
+                `The actual preview build failed. Repair the source and preserve unrelated work (attempt ${repairs + 1}/3). Do not remove requested content or hide the error.\n${buildError.slice(0, 16000)}`,
+                selected,
+                { ...context, buildError },
+                repairs + 1,
+                [],
+                reviewing,
+              );
+              await completion;
+              done();
+              return;
+            } catch (cause) {
+              // Keep the turn owned until history cleanup completes, even
+              // though this process has already exited and restart failed.
+              child = running;
+              restartFailure = `Could not run ${selected}: ${cause instanceof Error ? cause.message : String(cause)}`;
+            }
           }
           let reviewFailure = '';
           if (!stopping && !buildError && review) {
@@ -213,14 +223,16 @@ Current request and preview context (JSON): ${JSON.stringify(user)}`;
                 return;
               }
             } catch (error) {
+              child = running;
               reviewFailure = error instanceof Error ? error.message : String(error);
             }
           }
           status = stopping
             ? 'Stopped. Saved edits remain in the preview.'
-            : buildError
-              ? 'Preview still has errors after 3 repair attempts.\n' + buildError.slice(0, 16000)
-              : reviewFailure || 'Done';
+            : restartFailure ||
+              (buildError
+                ? 'Preview still has errors after 3 repair attempts.\n' + buildError.slice(0, 16000)
+                : reviewFailure || 'Done');
         }
         try {
           await history?.end();
@@ -308,13 +320,17 @@ Current request and preview context (JSON): ${JSON.stringify(user)}`;
       }
       const context = focus(value.slide, value.revision);
       starting = true;
+      let beganHistory = false;
       try {
         await history?.begin();
+        beganHistory = true;
         if (closing) {
-          await history?.end();
           throw new Error('Agent is closing');
         }
         start(value.message.trim(), value.provider, context, 0, reviewImages(value.message.trim()));
+      } catch (cause) {
+        if (beganHistory) await history?.end();
+        throw cause;
       } finally {
         starting = false;
       }

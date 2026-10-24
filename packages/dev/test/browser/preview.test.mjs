@@ -2,9 +2,10 @@ import { chromium } from 'playwright';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import assert from 'node:assert/strict';
 test(
   'live edits preserve the viewport and patch only changed slides',
@@ -54,7 +55,7 @@ process.stdin.on('data',async data=>{
     const proc = spawn(
       process.execPath,
       [fileURLToPath(new URL('../../dist/cli.mjs', import.meta.url)), 'dev', file, '--port', '0'],
-      { env: { ...process.env, PATH: dir + ':' + process.env.PATH } },
+      { env: { ...process.env, PATH: [dir, process.env.PATH].filter(Boolean).join(delimiter) } },
     );
     let browser;
     try {
@@ -139,12 +140,15 @@ process.stdin.on('data',async data=>{
       await assertTerminalFits(agent);
       await page.screenshot({ path: '/tmp/office-kit-studio.png' });
       const inputs = [];
+      // ConPTY enables terminal focus reports. These are independent of the
+      // keyboard shortcut whose exact payload is asserted below.
+      const keyboardInput = (request) =>
+        request.url().endsWith('/terminal/input') &&
+        !['\x1b[I', '\x1b[O'].includes(request.postDataJSON().data);
       page.on('request', (request) => {
-        if (request.url().endsWith('/terminal/input')) inputs.push(request.postDataJSON().data);
+        if (keyboardInput(request)) inputs.push(request.postDataJSON().data);
       });
-      const newlineRequest = page.waitForRequest((request) =>
-        request.url().endsWith('/terminal/input'),
-      );
+      const newlineRequest = page.waitForRequest(keyboardInput);
       await agent.locator('.xterm-helper-textarea').press('Shift+Enter');
       await newlineRequest;
       assert.deepEqual(inputs, ['\x1b[13;2u']);
@@ -415,7 +419,11 @@ process.stdin.on('data',async data=>{
       );
     } finally {
       await browser?.close();
-      proc.kill('SIGTERM');
+      if (proc.exitCode === null && proc.signalCode === null) {
+        const exited = once(proc, 'exit');
+        proc.kill('SIGTERM');
+        await exited;
+      }
       await rm(dir, { recursive: true, force: true });
     }
   },

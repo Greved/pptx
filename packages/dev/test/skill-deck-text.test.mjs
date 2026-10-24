@@ -18,7 +18,11 @@ test('the skill deck-text script reads named headlines and flags wording', async
   const directory = await mkdtemp(join(tmpdir(), 'pptx-deck-text-test-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const project = await initProject(join(directory, 'slides'));
-  await symlink(devModules, join(project, 'node_modules'), 'dir');
+  await symlink(
+    devModules,
+    join(project, 'node_modules'),
+    process.platform === 'win32' ? 'junction' : 'dir',
+  );
   const deck = join(project, 'deck.tsx');
   await writeFile(
     deck,

@@ -1,5 +1,6 @@
 import type { VisualReview } from './visual-review.ts';
 import { authoringGuidance } from './authoring-guidance.ts';
+import { resolveCliCommand } from './cli-command.ts';
 import { randomBytes } from 'node:crypto';
 import { dirname, resolve, join } from 'node:path';
 import { createRequire } from 'node:module';
@@ -263,13 +264,18 @@ Preview context captured with the latest terminal input: ${JSON.stringify(contex
             const env = { ...globalThis.process.env };
             // This is an independent interactive session, even if the preview was started by Claude.
             delete env.CLAUDECODE;
-            process = pty.spawn('claude', ['--settings', JSON.stringify(settings)], {
-              cwd: dirname(resolve(entry)),
-              name: 'xterm-256color',
-              env,
-              cols: value.cols,
-              rows: value.rows,
-            });
+            const command = resolveCliCommand('claude', env, dirname(resolve(entry)));
+            process = pty.spawn(
+              command.file,
+              [...command.args, '--settings', JSON.stringify(settings)],
+              {
+                cwd: dirname(resolve(entry)),
+                name: 'xterm-256color',
+                env,
+                cols: value.cols,
+                rows: value.rows,
+              },
+            );
           } finally {
             starting = false;
           }

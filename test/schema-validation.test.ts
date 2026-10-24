@@ -2,7 +2,7 @@
 //
 // The library's job at L1 is to never emit invalid OOXML. These tests
 // open the artifacts every authoring path produces and run them through
-// `xmllint --schema`.
+// the required libxml2 WebAssembly schema validator.
 
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';

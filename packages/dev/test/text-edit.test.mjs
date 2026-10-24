@@ -70,21 +70,32 @@ test('literal edits escape TSX and refuse ambiguous, stale, shared and concurren
 test('text edits cannot follow a dependency symlink outside the project', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'office-text-scope-'));
   try {
-    await writeFile(join(dir, 'outside.tsx'), '<Text>Hello</Text>');
+    const outside = join(dir, 'outside');
+    await mkdir(outside);
+    const outsideFile = join(outside, 'text.tsx');
+    await writeFile(outsideFile, '<Text>Hello</Text>');
     const project = join(dir, 'project');
     await mkdir(project);
     const entry = join(project, 'deck.tsx');
-    await symlink(join(dir, 'outside.tsx'), entry);
+    await writeFile(entry, '<Text>Other</Text>');
+    const linked = join(project, 'dependency');
+    await symlink(outside, linked, process.platform === 'win32' ? 'junction' : 'dir');
     const editor = createTextEditor(
       entry,
-      () => ({ revision: 1, slides: ['svg'], slideTexts: ['Hello'], dependencies: [entry] }),
+      () => ({
+        revision: 1,
+        slides: ['svg'],
+        slideTexts: ['Hello'],
+        dependencies: [entry, join(linked, 'text.tsx')],
+      }),
       async () => null,
     );
     await assert.rejects(
       editor.edit({ revision: 1, slide: 0, before: 'Hello', after: 'Changed' }),
       /computed or has multiple/,
     );
-    assert.equal(await readFile(join(dir, 'outside.tsx'), 'utf8'), '<Text>Hello</Text>');
+    assert.equal(await readFile(outsideFile, 'utf8'), '<Text>Hello</Text>');
+    assert.equal(await readFile(entry, 'utf8'), '<Text>Other</Text>');
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

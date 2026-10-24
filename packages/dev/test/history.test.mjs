@@ -74,7 +74,13 @@ test('history excludes dependencies, generated reviews and symlinks, refuses sym
   const other = join(outside, 'deck.tsx');
   await writeFile(other, 'untouched');
   await rm(file);
-  await symlink(other, file);
+  // Junctions require no elevated symlink privileges on Windows. Replacing a
+  // tracked file with either link must still refuse history writes.
+  await symlink(
+    process.platform === 'win32' ? outside : other,
+    file,
+    process.platform === 'win32' ? 'junction' : 'file',
+  );
   await assert.rejects(history.move('undo'), /changed type/);
   assert.equal(await readFile(other, 'utf8'), 'untouched');
 });

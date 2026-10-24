@@ -39,3 +39,6 @@ test/corpus/out/
 
 # Local scratch probes (not part of the package)
 .probe/
+
+# Local full-suite investigation reports (CI uploads execution evidence separately).
+.artifacts/

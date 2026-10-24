@@ -1,16 +1,73 @@
-import { test } from 'node:test';
+import { mock, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, request as httpRequest } from 'node:http';
-import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
+import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
+import { chmod, mkdir, mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
+import { resolveCliCommand } from '../src/cli-command.ts';
 import { createChat } from '../src/chat.ts';
 
 const pause = () => new Promise((done) => setTimeout(done, 20));
+
+test('CLI resolution launches only recognized Node scripts and keeps arguments separate', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'pptx node cli '));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const env = { PATH: directory };
+  const file = join(directory, 'codex');
+  for (const shebang of [`#!${process.execPath}`, '#!/usr/bin/env node']) {
+    await writeFile(file, `${shebang}\r\nconsole.log('ready');`, { mode: 0o755 });
+    assert.deepEqual(resolveCliCommand('codex', env), {
+      file: process.execPath,
+      args: [file],
+    });
+  }
+  for (const content of ['#!/bin/sh\necho node', '#!/usr/bin/env node --inspect\n', 'node']) {
+    await writeFile(file, content);
+    assert.deepEqual(resolveCliCommand('codex', env), { file: 'codex', args: [] });
+  }
+  await writeFile(file, '#!/usr/bin/env node' + ' '.repeat(4096) + '\n');
+  assert.deepEqual(resolveCliCommand('codex', env), { file: 'codex', args: [] });
+  await rm(file);
+  assert.deepEqual(resolveCliCommand('codex', env), { file: 'codex', args: [] });
+  await mkdir(file);
+  assert.deepEqual(resolveCliCommand('codex', env), { file: 'codex', args: [] });
+});
+
+test('CLI resolution preserves PATH ordering and POSIX executable permissions', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'pptx-cli-path-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const first = join(directory, 'first');
+  const second = join(directory, 'second');
+  await Promise.all([mkdir(first), mkdir(second)]);
+  await writeFile(join(first, 'codex'), '#!/bin/sh\n', { mode: 0o755 });
+  await writeFile(join(second, 'codex'), '#!/usr/bin/env node\n', { mode: 0o755 });
+  const env = { PATH: [first, second].join(delimiter) };
+  assert.deepEqual(resolveCliCommand('codex', env), { file: 'codex', args: [] });
+  await rm(join(first, 'codex'));
+  if (process.platform === 'win32') {
+    await writeFile(join(first, 'codex.exe'), 'native executable');
+    assert.deepEqual(resolveCliCommand('codex', env), { file: 'codex', args: [] });
+    await rm(join(first, 'codex.exe'));
+  }
+  assert.deepEqual(resolveCliCommand('codex', env), {
+    file: process.execPath,
+    args: [join(second, 'codex')],
+  });
+  if (process.platform === 'win32') {
+    await writeFile(join(directory, 'codex.exe'), 'native executable');
+    assert.deepEqual(resolveCliCommand('codex', env, directory), { file: 'codex', args: [] });
+  }
+  if (process.platform !== 'win32') {
+    await chmod(join(second, 'codex'), 0o644);
+    assert.deepEqual(resolveCliCommand('codex', env), { file: 'codex', args: [] });
+  }
+});
 test('CLI chat includes focus/history, renders Markdown, serializes edits and stops', async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), 'pptx-chat-'));
+  const directory = await mkdtemp(join(tmpdir(), 'pptx chat '));
   const previousPath = process.env.PATH;
-  process.env.PATH = directory + ':' + previousPath;
+  process.env.PATH = [directory, previousPath].filter(Boolean).join(delimiter);
   const script = `#!${process.execPath}
 import {writeFileSync} from 'node:fs';
 let input='';for await(const chunk of process.stdin)input+=chunk;
@@ -175,4 +232,40 @@ else {
   process.env.PATH = directory;
   await post(request('missing executable'));
   assert.match((await finished()).status, /Install it and log in/);
+  await writeFile(join(directory, 'codex'), script, { mode: 0o755 });
+  process.env.PATH = [directory, previousPath].filter(Boolean).join(delimiter);
+  await post({}, '/chat/reset');
+  const originalStat = fs.statSync;
+  const failLaunch = (at) => {
+    let resolutions = 0;
+    const replacement = mock.method(fs, 'statSync', (...args) => {
+      if (args[0] === join(directory, 'codex') && ++resolutions === at)
+        throw Object.assign(new Error('CLI filesystem unavailable'), { code: 'EIO' });
+      return originalStat(...args);
+    });
+    syncBuiltinESMExports();
+    return () => {
+      replacement.mock.restore();
+      syncBuiltinESMExports();
+    };
+  };
+  let restoreStat = failLaunch(1);
+  try {
+    assert.equal((await post(request('startup failure'))).status, 400);
+    assert.deepEqual(historyEvents.slice(-2), ['begin', 'end']);
+  } finally {
+    restoreStat();
+  }
+  assert.equal((await post(request('retry startup'))).status, 202);
+  assert.equal((await finished()).status, 'Done');
+  verificationErrors = ['Repair the build'];
+  restoreStat = failLaunch(2);
+  try {
+    assert.equal((await post(request('repair startup failure'))).status, 202);
+    assert.match((await finished()).status, /CLI filesystem unavailable/);
+    assert.deepEqual(historyEvents.slice(-2), ['begin', 'end']);
+  } finally {
+    restoreStat();
+  }
+  await chat.close();
 });

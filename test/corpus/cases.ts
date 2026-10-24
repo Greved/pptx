@@ -201,11 +201,14 @@ export const CASES: CorpusCase[] = [
       s.addShape('line', { x: 1, y: 2, w: 5, h: 0, line: { color: '222222', width: 2 } });
     },
     kit: (_p, slide) => {
-      const ln = addSlideLine(slide, {
+      // Match PptxGenJS's direct formatting at creation. An initially unstyled
+      // connector has theme references that a later stroke edit preserves.
+      addSlideLine(slide, {
         from: { x: inches(1), y: inches(2) },
         to: { x: inches(6), y: inches(2) },
+        color: '#222222',
+        widthEmu: pt(2),
       });
-      setShapeStroke(ln, { color: '#222222', widthEmu: pt(2) });
     },
   },
   {
@@ -358,8 +361,9 @@ export const CASES: CorpusCase[] = [
       const ln = addSlideLine(slide, {
         from: { x: inches(1), y: inches(2) },
         to: { x: inches(6), y: inches(2) },
+        color: '#1F4E79',
+        widthEmu: pt(2),
       });
-      setShapeStroke(ln, { color: '#1F4E79', widthEmu: pt(2) });
       setShapeStrokeDash(ln, 'dash');
     },
   },
@@ -378,8 +382,9 @@ export const CASES: CorpusCase[] = [
       const ln = addSlideLine(slide, {
         from: { x: inches(1), y: inches(2) },
         to: { x: inches(6), y: inches(2) },
+        color: '#C00000',
+        widthEmu: pt(3),
       });
-      setShapeStroke(ln, { color: '#C00000', widthEmu: pt(3) });
       // PptxGenJS `endArrowType` is the line's END point — OOXML `<a:tailEnd>`.
       setShapeStrokeArrow(ln, 'tail', { type: 'triangle' });
     },

@@ -1,9 +1,10 @@
 import { context, transform } from 'esbuild';
 import { readFile, writeFile } from 'node:fs/promises';
 import { resolve, sep } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { pathToFileURL } from 'node:url';
 
-const resolvePackage = (name: string) => fileURLToPath(import.meta.resolve(name));
+// External ESM imports need file: URLs; drive-letter paths are URL schemes in Node.
+const resolvePackage = (name: string) => import.meta.resolve(name);
 
 export async function createDeckCompiler(entry: string) {
   const transformedSources = new Map<string, { source: string; code: string }>();

@@ -218,8 +218,9 @@ core model. Both produce editable native text and charts.
   SDK's `OpenXmlValidator` over them (`tools/ooxml-validate`). Any validation error
   fails the build.
 - **ECMA-376 XSDs.** Emitted XML is validated against the official schemas
-  with `xmllint` in the test suite (these tests skip on a machine without
-  `xmllint`).
+  with the pinned libxml2 WebAssembly validator in the test suite. The exact ECMA
+  submodule and every imported schema are required; missing infrastructure fails
+  the build on every supported OS.
 - **Real files and a parity corpus.** Fixture tests round-trip decks written
   by python-pptx and PptxGenJS, and `test/corpus` authors the same slide once
   with PptxGenJS and once with this library, then diffs the two drawing trees.

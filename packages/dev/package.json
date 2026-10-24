@@ -29,7 +29,7 @@
   "scripts": {
     "build": "tsdown && node build-terminal.mjs && node build-editor.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "node --test test/*.test.mjs",
+    "test": "node --test test/*.test.mjs test/*.test.ts",
     "test:browser": "node --test --test-concurrency=1 --test-timeout=180000 test/browser/*.test.mjs"
   },
   "dependencies": {

@@ -52,8 +52,7 @@ export interface ConnectorOptions {
   to: { x: number; y: number };
   /**
    * Line color. Same accepted forms as `setFill` — `#RRGGBB`, scheme
-   * tokens, etc. When omitted the reference desktop app applies the layout's default
-   * line color.
+   * tokens, etc. When omitted, inherits accent1 from the theme's first line style.
    */
   color?: Color;
   /** Line width in EMU. The reference desktop app's hairline default is `9525` (0.75pt). */
@@ -123,11 +122,10 @@ export const buildConnector = (opts: ConnectorOptions): XmlElement => {
   const spPr = elem(NAME_SP_PR, { children: spPrChildren });
 
   const children: XmlElement[] = [nvCxnSpPr, spPr];
-  // A connector is a stroke-only open path. With no explicit <a:ln> AND no
-  // <p:style>, the reference desktop app has no outline to draw and the line is invisible.
-  // Emit the reference desktop app's default connector style (lnRef idx="1" → the theme's
-  // first line style in accent1) so an unstyled line still renders.
-  if (!hasExplicitLine) {
+  // Direct line properties overlay the theme style property by property. A
+  // width-only line still needs theme paint, and a color-only line needs width.
+  // Fully specified lines retain their independent, direct formatting.
+  if (opts.color === undefined || opts.widthEmu === undefined) {
     const styleRef = (name: typeof NAME_LN_REF, idx: string, clr: string): XmlElement =>
       elem(name, {
         attrs: [attr(ATTR_IDX, idx)],

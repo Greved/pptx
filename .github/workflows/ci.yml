@@ -1,18 +1,13 @@
 name: CI
 
-# Quality gate for the project. Adapt the steps below to the language / package
-# manager of the project that uses this template.
-#
-# Defaults assume Node.js + pnpm. For other stacks (Cargo, Python, Go, ...),
-# replace the install / typecheck / lint / test / build steps accordingly. The
-# overall structure (cheap static gate, then test matrix) is stack-agnostic and
-# worth keeping.
+# Require the stable "Required CI" check in the fork's branch protection.
+# It is successful only when every static, test, browser, fidelity and SDK job succeeds.
 
 on:
   push:
-    branches: [main]
+    branches: [main, codex/slideget-json-deckops]
   pull_request:
-    branches: [main]
+  workflow_dispatch:
 
 # Cancel in-flight runs on the same ref so a fast-forward push doesn't spend
 # minutes on stale CI.
@@ -22,6 +17,11 @@ concurrency:
 
 permissions:
   contents: read
+
+env:
+  # Inherited unit tests supply browser globals; Node's experimental global
+  # localStorage must not interfere with their explicit test environment.
+  NODE_OPTIONS: --no-experimental-webstorage
 
 jobs:
   # Cheap, single-version gate. Catches typing / lint / format violations before
@@ -49,6 +49,9 @@ jobs:
 
       - name: Type check
         run: pnpm typecheck
+
+      - name: Type check CI runners
+        run: pnpm exec tsc --project scripts/ci/tsconfig.json
 
       - name: Build
         run: pnpm build
@@ -88,23 +91,23 @@ jobs:
   # Multi-version test matrix. Adapt the matrix to the runtimes the project
   # supports. Drop versions that are past their EOL date.
   test:
-    name: Test (Node ${{ matrix.node-version }})
+    name: Test (Node ${{ matrix.node-version }}, ${{ matrix.os }})
     needs: static
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest]
         node-version: ['22', '24', '26']
+        include:
+          - os: windows-latest
+            node-version: '24'
     steps:
       - uses: actions/checkout@v6
 
-      - name: Fetch ECMA-376 schemas for enum domain tests
-        run: git submodule update --init --depth 1 references/ecma-376-5th
-
-      - name: Install XML schema validator
-        timeout-minutes: 12
-        run: .github/scripts/retry.sh 180 bash -c 'sudo apt-get update && sudo apt-get install -y --no-install-recommends libxml2-utils'
+      - name: Fetch pinned schemas and reference corpus
+        run: git submodule update --init --depth 1 references/ecma-376-5th references/PptxGenJS
 
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v6
@@ -113,13 +116,29 @@ jobs:
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
-      - run: pnpm test
+
+      - name: Prove required XML validation infrastructure
+        run: pnpm test:xml:infrastructure
+
+      # Enables the inherited opt-in sample and core save/load smoke suites.
+      # Reports are checked against source discovery; no skipped assertion passes.
+      - name: Test all core, preview and DSL suites
+        run: pnpm exec node scripts/ci/core-tests.ts
       - name: Build authoring packages
         run: pnpm --filter @office-kit/pptx-dev... build
       - name: Test TSX authoring and live preview
-        run: pnpm --filter @office-kit/pptx-dev test
+        run: pnpm exec node scripts/ci/node-tests.ts dev-unit
       - name: Test editor package
-        run: pnpm --filter @office-kit/pptx-editor test
+        run: pnpm exec node scripts/ci/node-tests.ts editor-unit
+
+      - name: Upload test execution evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: tests-node-${{ matrix.node-version }}-${{ matrix.os }}
+          path: .probe/ci/
+          if-no-files-found: error
+          retention-days: 7
 
   # The browser suite takes ~46 min on one runner, so it is split by file
   # across parallel jobs. Files stay serial within a shard (as in
@@ -148,19 +167,25 @@ jobs:
       - name: Install preview test browser
         timeout-minutes: 20
         run: .github/scripts/retry.sh 360 pnpm --filter @office-kit/pptx-dev exec playwright install --with-deps chromium
-      # `node --test` only honours --test-shard before the file list, so this
-      # repeats `test:browser`'s flags instead of appending to the script.
       - name: Test live preview in Chromium
-        working-directory: packages/dev
         env:
           PLAYWRIGHT_CHANNEL: chromium
-        run: pnpm exec node --test --test-concurrency=1 --test-timeout=180000 --test-shard=${{ matrix.shard }}/8 test/browser/*.test.mjs
+        run: pnpm exec node scripts/ci/node-tests.ts dev-browser ${{ matrix.shard }}/8
       # The embedding tests are short; one shard runs them.
       - name: Test embedding the editor in Chromium
         if: matrix.shard == 1
         env:
           PLAYWRIGHT_CHANNEL: chromium
-        run: pnpm --filter @office-kit/pptx-editor test:browser
+        run: pnpm exec node scripts/ci/node-tests.ts editor-browser
+
+      - name: Upload browser execution evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: browser-${{ matrix.shard }}
+          path: .probe/ci/
+          if-no-files-found: error
+          retention-days: 7
 
   # Measures how closely @office-kit/pptx-preview's SVG renderer matches LibreOffice's
   # output for each generated sample slide, and gates on a committed baseline.
@@ -212,7 +237,7 @@ jobs:
           name: fidelity-report
           path: site/fidelity/out/
           retention-days: 7
-          if-no-files-found: ignore
+          if-no-files-found: error
 
       - name: Upload baseline candidate
         if: always()
@@ -221,7 +246,7 @@ jobs:
           name: fidelity-baseline-candidate
           path: site/fidelity/baseline.candidate.json
           retention-days: 7
-          if-no-files-found: ignore
+          if-no-files-found: error
 
   # Secondary OOXML oracle. The test job validates XML against XSDs.
   # Even full XSD validation can't express the semantic
@@ -258,3 +283,18 @@ jobs:
 
       - name: Validate samples with OpenXmlValidator
         run: dotnet run --project tools/ooxml-validate -c Release -- samples/out
+
+  required:
+    name: Required CI
+    if: always()
+    needs: [static, test, browser, fidelity, ooxml-oracle]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24.16.0
+      - name: Require every job and matrix member to succeed
+        env:
+          CI_JOB_RESULTS: ${{ toJSON(needs) }}
+        run: node scripts/ci/required-check.ts

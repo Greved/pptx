@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { createTerminal } from '../src/terminal.ts';
 
 const pause = () => new Promise((resolve) => setTimeout(resolve, 20));
@@ -13,7 +13,7 @@ test(
   async (t) => {
     const directory = await mkdtemp(join(tmpdir(), 'pptx-terminal-'));
     const previousPath = process.env.PATH;
-    process.env.PATH = directory + ':' + previousPath;
+    process.env.PATH = [directory, previousPath].filter(Boolean).join(delimiter);
     await writeFile(
       join(directory, 'claude'),
       `#!${process.execPath}

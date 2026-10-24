@@ -1,105 +1,55 @@
-// Layer 1 of the testing strategy: XSD schema validation via `xmllint`.
-//
-// Strict, fast, and authoritative. If our emitted XML doesn't conform to
-// the ECMA-376 schema, the test fails — no human judgment required.
-//
-// Why xmllint and not a JS validator: libxml2's schema engine handles the
-// OOXML schema family's complex import graph correctly out of the box,
-// while pure-JS validators tend to choke on cross-namespace `xs:include` /
-// `xs:import`. xmllint is everywhere on macOS / Linux dev machines; CI
-// installs it via `apt install libxml2-utils`.
-//
-// Tests that need this layer simply call `expectSchemaValid(xml, 'pml')`.
-// Tests that need to run on machines without xmllint should guard with
-// `isSchemaValidationAvailable()` and skip cleanly.
+import { afterAll } from 'vitest';
+import type { XsdValidator } from 'libxml2-wasm';
+import { compileSchema, readSchemaGraph, schemaFiles, validateXml } from './schema-validator.ts';
+import type { SchemaKind } from './schema-validator.ts';
 
-import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { fileURLToPath } from 'node:url';
-import { join } from 'node:path';
+export type { SchemaKind } from './schema-validator.ts';
 
-const SCHEMAS = {
-  pml: 'ECMA-376/OfficeOpenXML-XMLSchema-Transitional/pml.xsd',
-  dml: 'ECMA-376/OfficeOpenXML-XMLSchema-Transitional/dml-main.xsd',
-  chart: 'ECMA-376/OfficeOpenXML-XMLSchema-Transitional/dml-chart.xsd',
-  rels: 'ECMA-376/OpenPackagingConventions-XMLSchema/opc-relationships.xsd',
-  contentTypes: 'ECMA-376/OpenPackagingConventions-XMLSchema/opc-contentTypes.xsd',
-  // The reference desktop app's own transition elements (p14 / p15 / p159), which ECMA-376
-  // does not define: [MS-PPTX]'s schema fragments, transcribed under test/lib.
-  pptxTransitions: fileURLToPath(new URL('./ms-pptx/transitions.xsd', import.meta.url)),
-} as const;
+// A missing schema/import fails collection instead of silently skipping validation tests.
+const documents = readSchemaGraph(Object.values(schemaFiles));
+const validators = new Map<SchemaKind, XsdValidator>();
+afterAll(() => {
+  for (const validator of validators.values()) validator.dispose();
+  validators.clear();
+});
 
-export type SchemaKind = keyof typeof SCHEMAS;
-
-// Repo-relative path of the ecma-376 submodule.
-const ECMA_376_ROOT = fileURLToPath(new URL('../../references/ecma-376-5th/', import.meta.url));
-
-const schemaPath = (kind: SchemaKind): string =>
-  kind === 'pptxTransitions' ? SCHEMAS[kind] : join(ECMA_376_ROOT, SCHEMAS[kind]);
-
-/**
- * Returns true if `xmllint` is on PATH. Tests that need schema validation
- * should skip when this is false rather than fail (developers without
- * libxml2 installed can still run the rest of the suite).
- */
-export const isSchemaValidationAvailable = (): boolean => {
-  const which = spawnSync('xmllint', ['--version'], { encoding: 'utf8', stdio: 'pipe' });
-  return which.status === 0;
+const validatorFor = (kind: SchemaKind): XsdValidator => {
+  const cached = validators.get(kind);
+  if (cached) return cached;
+  const validator = compileSchema(schemaFiles[kind], documents);
+  validators.set(kind, validator);
+  return validator;
 };
 
-/**
- * Asserts `xml` validates against the ECMA-376 schema for `kind`. Throws
- * with the verbatim xmllint diagnostic on failure.
- */
+/** Kept for existing callers; required infrastructure now throws instead of returning false. */
+export const isSchemaValidationAvailable = (): true => {
+  validateXml(
+    validatorFor('rels'),
+    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>',
+  );
+  return true;
+};
+
 export const expectSchemaValid = (xml: string, kind: SchemaKind): void => {
-  if (!isSchemaValidationAvailable()) {
-    throw new Error(
-      'xmllint is not installed; install libxml2-utils to run schema-validation tests',
-    );
-  }
-  const dir = mkdtempSync(join(tmpdir(), 'office-kit-pptx-schema-'));
-  const file = join(dir, 'doc.xml');
+  const validator = validatorFor(kind);
   try {
-    writeFileSync(file, xml, 'utf8');
-    const r = spawnSync('xmllint', ['--noout', '--schema', schemaPath(kind), file], {
-      encoding: 'utf8',
-      stdio: 'pipe',
-    });
-    if (r.status !== 0) {
-      const out = `${r.stdout}\n${r.stderr}`.trim();
-      throw new Error(`schema validation failed (${kind}):\n${out}`);
-    }
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
+    validateXml(validator, xml);
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    throw new Error(`schema validation failed (${kind}):\n${message}`, { cause });
   }
 };
 
-/**
- * Like `expectSchemaValid`, for several documents of one kind in a single
- * xmllint run (loading the OOXML schemas dominates the cost of a run). The
- * diagnostic names each failing document by its `name`.
- */
 export const expectSchemaValidAll = (
   documents: ReadonlyArray<{ readonly name: string; readonly xml: string }>,
   kind: SchemaKind,
 ): void => {
-  const dir = mkdtempSync(join(tmpdir(), 'office-kit-pptx-schema-'));
-  try {
-    const files = documents.map((document, index) => {
-      const file = join(dir, `${index}-${document.name.replace(/[^\w.-]/g, '_')}`);
-      writeFileSync(file, document.xml, 'utf8');
-      return file;
-    });
-    const r = spawnSync('xmllint', ['--noout', '--schema', schemaPath(kind), ...files], {
-      encoding: 'utf8',
-      stdio: 'pipe',
-    });
-    if (r.status !== 0) {
-      const out = `${r.stdout}\n${r.stderr}`.trim();
-      throw new Error(`schema validation failed (${kind}):\n${out}`);
+  for (const document of documents) {
+    try {
+      expectSchemaValid(document.xml, kind);
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      throw new Error(`${document.name}: ${message}`, { cause });
     }
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
   }
 };
