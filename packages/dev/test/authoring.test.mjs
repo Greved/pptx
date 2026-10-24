@@ -1,8 +1,18 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, writeFile, rm, symlink, readdir } from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readlink,
+  realpath,
+  writeFile,
+  rm,
+  symlink,
+  readdir,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -14,6 +24,26 @@ const cli = fileURLToPath(new URL('../dist/cli.mjs', import.meta.url));
 // Anchored to this file, not the cwd: the suite runs both from the repo root
 // and from `packages/dev` (`pnpm --filter ... test`).
 const devModules = fileURLToPath(new URL('../node_modules', import.meta.url));
+
+async function linkDependencies(project) {
+  // Linking node_modules wholesale leaves pnpm's nested junctions under an
+  // alias on another drive. Link each package to its canonical root instead.
+  await Promise.all(
+    ['@office-kit/pptx', '@office-kit/pptx-dsl', '@types/node'].map(async (name) => {
+      const target = await realpath(join(devModules, name));
+      const link = join(project, 'node_modules', name);
+      await mkdir(dirname(link), { recursive: true });
+      await symlink(target, link, process.platform === 'win32' ? 'junction' : 'dir');
+      assert.equal(await readlink(link), target);
+      assert.equal(await realpath(link), target);
+      assert.equal(
+        await realpath(join(link, 'package.json')),
+        await realpath(join(target, 'package.json')),
+      );
+    }),
+  );
+}
+
 async function fixture(t) {
   const directory = await mkdtemp(join(tmpdir(), 'pptx-authoring-test-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -23,11 +53,7 @@ async function fixture(t) {
 test('initialized TSX typechecks, builds, and uses source-relative assets in imported modules', async (t) => {
   const directory = await fixture(t);
   const project = await initProject(join(directory, 'slides'));
-  await symlink(
-    devModules,
-    join(project, 'node_modules'),
-    process.platform === 'win32' ? 'junction' : 'dir',
-  );
+  await linkDependencies(project);
   await execute(process.execPath, [join(devModules, 'typescript/bin/tsc'), '--project', project]);
   const deck = join(project, 'deck.tsx');
   const result = await buildDeck(deck);
@@ -241,11 +267,7 @@ test('check does not fail text that only spills into its box insets', async () =
 test('check passes the starter deck and fails text that overflows or is too small', async (t) => {
   const directory = await fixture(t);
   const project = await initProject(join(directory, 'slides'));
-  await symlink(
-    devModules,
-    join(project, 'node_modules'),
-    process.platform === 'win32' ? 'junction' : 'dir',
-  );
+  await linkDependencies(project);
   const manifest = JSON.parse(await readFile(join(project, 'package.json'), 'utf8'));
   assert.equal(manifest.scripts.check, 'tsc --noEmit && office-pptx check deck.tsx');
   const passed = await execute(process.execPath, [cli, 'check', join(project, 'deck.tsx')]);

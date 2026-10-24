@@ -43,6 +43,7 @@ test(
       const size = tabs.getByRole('tab', { name: 'Size & Properties' });
       assert.equal(await paint.getAttribute('aria-selected'), 'true');
       await expandFormatSections(editor, 'Fill');
+      await editor.getByRole('radio', { name: 'No fill', exact: true }).waitFor();
       assert.equal(
         await editor.getByRole('radio', { name: 'No fill', exact: true }).isVisible(),
         true,

@@ -61,6 +61,13 @@ for (const table of [false, true])
           await page.goto(preview.url);
           const editor = page.frameLocator('#editor-frame');
           await editor.getByText('Saved to this project', { exact: true }).waitFor();
+          // The Format pane mounts its controls when opened. Keep the side
+          // paragraph controls visible while checking the floating edit bar.
+          await editor.locator('.stage').click({ button: 'right', position: { x: 8, y: 8 } });
+          await editor.getByRole('menuitem', { name: 'Format Background...', exact: true }).click();
+          await editor.locator('.hit').click();
+          if (!table)
+            await editor.getByRole('tab', { name: 'Size & Properties', exact: true }).click();
           await editor.locator('.hit').dblclick();
           const input = editor.locator('.canvas-shell .inline-edit');
           await input.waitFor();

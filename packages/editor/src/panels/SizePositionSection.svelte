@@ -1,3 +1,17 @@
+<script module lang="ts">
+  import type { PresentationData, ShapeBounds as OriginalShapeBounds } from '@office-kit/pptx';
+  import type { EditorController } from '../core/controller.svelte.ts';
+  import type { Selection } from '../core/selection.ts';
+
+  // A lazy Format pane can unmount while the same objects remain selected.
+  // Retain their scale baseline for that selection, bounded to one per editor.
+  const selectionBounds = new WeakMap<EditorController, {
+    selection: Selection;
+    pres: WeakRef<PresentationData>;
+    bounds: Map<number, OriginalShapeBounds>;
+  }>();
+</script>
+
 <script lang="ts">
   import { untrack } from 'svelte';
   import { isShapeAspectRatioLocked, setShapeAspectRatioLocked, cm, emu, getSlideSize, getShapeBoundsResolved, getShapeId, getShapeRotation, setShapeBounds, type ShapeBounds } from '@office-kit/pptx';
@@ -24,7 +38,14 @@
     doc.selection;
     doc.pres;
     // Scaling percentages use the dimensions when the objects were selected.
-    originals = untrack(() => new Map(geometry.map(item => [getShapeId(item.shape), { ...item.bounds }])));
+    const previous = selectionBounds.get(editor);
+    if (previous?.selection === doc.selection && previous.pres.deref() === doc.pres) {
+      originals = previous.bounds;
+      return;
+    }
+    const bounds = untrack(() => new Map(geometry.map(item => [getShapeId(item.shape), { ...item.bounds }])));
+    originals = bounds;
+    selectionBounds.set(editor, { selection: doc.selection, pres: new WeakRef(doc.pres), bounds });
   });
   const lockAspectRatio = $derived.by(() => {
     doc.version;

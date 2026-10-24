@@ -151,6 +151,7 @@ test(
         [42, 42, 42],
       );
       const lineTypes = page.getByRole('group', { name: 'Line type', exact: true });
+      await lineTypes.getByRole('radio', { name: 'No line', exact: true }).waitFor();
       assert.deepEqual(
         await lineTypes
           .getByRole('radio')

@@ -266,6 +266,7 @@ test('large decks bound thumbnail SVGs while keeping keyboard rows and live canv
   await group.evaluate((element) =>
     element.setAttribute('data-gesture-identity', 'original-glyphs'),
   );
+  await page.evaluate(() => document.getSelection()?.removeAllRanges());
   await page.mouse.move(box.x + 1, box.y + box.height / 2);
   await page.mouse.down();
   await page.mouse.move(box.x + 61, box.y + box.height / 2 + 20, { steps: 5 });
@@ -275,6 +276,11 @@ test('large decks bound thumbnail SVGs while keeping keyboard rows and live canv
   });
   assert.equal(await group.getAttribute('data-gesture-identity'), 'original-glyphs');
   assert.match((await group.getAttribute('transform')) ?? '', /^translate\(/);
+  assert.equal(
+    await page.evaluate(() => document.getSelection()?.type),
+    'None',
+    'Object movement must not create a native page caret or selection',
+  );
   await page.mouse.up();
   await page.waitForFunction(
     () =>
@@ -316,6 +322,10 @@ test('large decks bound thumbnail SVGs while keeping keyboard rows and live canv
   await hit.dblclick();
   await page.locator('.canvas-shell .inline-edit').waitFor();
   await page.keyboard.press('Control+A');
+  assert.match(
+    await page.evaluate(() => document.getSelection()?.toString() ?? ''),
+    /Rich text slide/,
+  );
   await page.keyboard.type('Updated rich text');
   const draftBox = await page.locator('.stage .hit').nth(1).boundingBox();
   assert.ok(draftBox);

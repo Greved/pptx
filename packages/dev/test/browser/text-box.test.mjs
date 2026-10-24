@@ -161,6 +161,7 @@ test(
         name: 'Vertical alignment',
         exact: true,
       });
+      await verticalAlignment.waitFor();
       assert.equal(await verticalAlignment.locator('option').count(), 7);
       await verticalAlignment.selectOption('top-centered');
       await saved();

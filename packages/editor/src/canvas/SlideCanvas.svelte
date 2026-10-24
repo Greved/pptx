@@ -1712,6 +1712,9 @@
     background: #fff;
     box-shadow: var(--ok-shadow-lg);
     touch-action: none;
+    /* Object gestures own selection. Native page-caret synchronization otherwise
+       walks SVG text on every pointer move, even when no text is highlighted. */
+    user-select: none;
   }
   .inline-effects {
     position: absolute;
@@ -1731,6 +1734,7 @@
   }
   .inline-edit-body :global(.inline-edit) {
     pointer-events: auto;
+    user-select: text;
   }
   .paint,
   .overlay {

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, rm, symlink } from 'node:fs/promises';
+import { mkdir, mkdtemp, readlink, realpath, writeFile, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -18,10 +18,17 @@ test('the skill deck-text script reads named headlines and flags wording', async
   const directory = await mkdtemp(join(tmpdir(), 'pptx-deck-text-test-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const project = await initProject(join(directory, 'slides'));
-  await symlink(
-    devModules,
-    join(project, 'node_modules'),
-    process.platform === 'win32' ? 'junction' : 'dir',
+  // Resolve pnpm's package junction before exposing it from a temp project on
+  // another drive; do not traverse nested links through a node_modules alias.
+  const target = await realpath(join(devModules, '@office-kit', 'pptx'));
+  const installed = join(project, 'node_modules', '@office-kit', 'pptx');
+  await mkdir(join(project, 'node_modules', '@office-kit'), { recursive: true });
+  await symlink(target, installed, process.platform === 'win32' ? 'junction' : 'dir');
+  assert.equal(await readlink(installed), target);
+  assert.equal(await realpath(installed), target);
+  assert.equal(
+    await realpath(join(installed, 'package.json')),
+    await realpath(join(target, 'package.json')),
   );
   const deck = join(project, 'deck.tsx');
   await writeFile(

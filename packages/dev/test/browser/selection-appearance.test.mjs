@@ -171,6 +171,7 @@ test(
       await fillSection.locator('summary').click();
       assert.equal(await fillSection.getByLabel('Fill', { exact: true }).isVisible(), false);
       await fillSection.locator('summary').click();
+      await fillSection.getByLabel('Fill', { exact: true }).waitFor({ state: 'visible' });
       assert.equal(await fillSection.getByLabel('Fill', { exact: true }).isVisible(), true);
       assert.deepEqual(errors, []);
     } finally {
@@ -205,6 +206,13 @@ test(
         editor
           .getByText(ja ? 'このプロジェクトに保存済み' : 'Saved to this project', { exact: true })
           .waitFor();
+      // Lazy sections mount independently; hidden text tools also have color inputs.
+      const fillColor = editor.locator(
+        '.bespoke .pane-section[data-section="fill"] input[type=color]',
+      );
+      const outlineColor = editor.locator(
+        '.bespoke .pane-section[data-section="line"] input[type=color]',
+      );
       const colors = async (reader) => {
         const deck = await loadPresentation(
           new Uint8Array(await (await fetch(preview.url + '/deck.pptx')).arrayBuffer()),
@@ -223,31 +231,26 @@ test(
         .nth(1)
         .click({ modifiers: ['Shift'] });
       assert.equal(await editor.locator('.hit.selected').count(), 2);
-      const changeColor = async (index, color) => {
-        await editor
-          .locator('.bespoke input[type=color]')
-          .nth(index)
-          .evaluate((node, value) => {
-            node.value = value;
-            node.dispatchEvent(new Event('input', { bubbles: true }));
-            node.dispatchEvent(new Event('change', { bubbles: true }));
-          }, color);
+      const changeColor = async (input, color) => {
+        await input.evaluate((node, value) => {
+          node.value = value;
+          node.dispatchEvent(new Event('input', { bubbles: true }));
+          node.dispatchEvent(new Event('change', { bubbles: true }));
+        }, color);
         await saved();
       };
       await editor.getByRole('radio', { name: 'Solid fill', exact: true }).check();
       await saved();
       initialFill = await colors(getShapeFillColor);
-      await changeColor(0, '#123456');
+      await changeColor(fillColor, '#123456');
       assert.deepEqual(await colors(getShapeFillColor), ['#123456', '#123456', initialFill[2]]);
-      assert.equal(
-        await editor.locator('.bespoke input[type=color]').nth(0).inputValue(),
-        '#123456',
-      );
+      assert.equal(await fillColor.inputValue(), '#123456');
       await editor.locator('.hit').nth(2).click();
-      assert.notEqual(
-        await editor.locator('.bespoke input[type=color]').nth(0).inputValue(),
-        '#123456',
+      assert.equal(
+        await editor.getByRole('radio', { name: 'No fill', exact: true }).isChecked(),
+        true,
       );
+      assert.equal(await fillColor.count(), 0);
       await editor
         .locator('.hit')
         .nth(0)
@@ -264,10 +267,7 @@ test(
       await editor.getByTitle('Undo (Ctrl+Z)', { exact: true }).click();
       await saved();
       assert.deepEqual(await colors(getShapeFillColor), initialFill);
-      assert.notEqual(
-        await editor.locator('.bespoke input[type=color]').nth(0).inputValue(),
-        '#123456',
-      );
+      assert.notEqual(await fillColor.inputValue(), '#123456');
       await editor.getByTitle('Redo (Ctrl+Y)', { exact: true }).click();
       await saved();
       assert.deepEqual(await colors(getShapeFillColor), ['#123456', '#123456', initialFill[2]]);
@@ -287,25 +287,19 @@ test(
         .locator('.hit')
         .nth(1)
         .click({ modifiers: ['Shift'] });
-      await changeColor(1, '#abcdef');
+      await changeColor(outlineColor, '#abcdef');
       assert.deepEqual(await colors(getShapeStrokeColor), ['#ABCDEF', '#ABCDEF', initialStroke[2]]);
       await editor.getByTitle('元に戻す (Ctrl+Z)', { exact: true }).click();
       await saved();
       assert.deepEqual(await colors(getShapeStrokeColor), initialStroke);
-      await changeColor(1, '#abcdef');
+      await changeColor(outlineColor, '#abcdef');
       await page.reload();
       await saved();
       await openFormatPane(editor, '背景の書式設定...');
       await editor.locator('.hit').nth(0).click();
       await expandFormatSections(editor, '塗りつぶし', '線');
-      assert.equal(
-        await editor.locator('.bespoke input[type=color]').nth(0).inputValue(),
-        '#123456',
-      );
-      assert.equal(
-        await editor.locator('.bespoke input[type=color]').nth(1).inputValue(),
-        '#abcdef',
-      );
+      assert.equal(await fillColor.inputValue(), '#123456');
+      assert.equal(await outlineColor.inputValue(), '#abcdef');
       assert.deepEqual(await colors(getShapeFillColor), ['#123456', '#123456', initialFill[2]]);
       assert.deepEqual(await colors(getShapeStrokeColor), ['#ABCDEF', '#ABCDEF', initialStroke[2]]);
       await editor
