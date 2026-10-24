@@ -180,8 +180,21 @@ describe('renderSlideToImage — rasterizer font options', () => {
   });
 
   it('loadSystemFonts: true still produces a valid PNG', async () => {
+    const started = performance.now();
     const { pres, slide } = await buildTestSlide();
+    const prepared = performance.now();
+    const memory = process.memoryUsage();
     const png = renderSlideToImage(pres, slide, { width: 320, loadSystemFonts: true });
+    process.stdout.write(
+      `${JSON.stringify({
+        diagnostic: 'system-font-raster',
+        setupMs: prepared - started,
+        rasterMs: performance.now() - prepared,
+        rssBeforeRaster: memory.rss,
+        heapBeforeRaster: memory.heapUsed,
+        externalBeforeRaster: memory.external,
+      })}\n`,
+    );
     expect(isPng(png)).toBe(true);
   });
 });

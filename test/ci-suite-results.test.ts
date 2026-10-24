@@ -5,12 +5,56 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
 import { requireSuites, testFiles, type SuiteResult } from '../scripts/ci/suite-results.ts';
+import { requireVitestPartitions, type VitestPartition } from '../scripts/ci/vitest-partitions.ts';
 
 const file = resolve('example.test.ts');
 const passed: SuiteResult = { file, passed: 1, failed: 0, skipped: 0, todo: 0 };
 const execute = promisify(execFile);
 
 describe('CI execution evidence', () => {
+  it('requires every process partition and its own exact source inventory', () => {
+    const rasterFile = resolve('test/preview-node-raster.test.ts');
+    const raster: SuiteResult = { ...passed, file: rasterFile, passed: 10 };
+    const expected = [file, rasterFile];
+    const core: VitestPartition = { name: 'core', files: [file], results: [passed], exitCode: 0 };
+    const native: VitestPartition = {
+      name: 'raster',
+      files: [rasterFile],
+      results: [raster],
+      exitCode: 0,
+    };
+    const partitions = [core, native];
+    expect(requireVitestPartitions(expected, partitions)).toEqual([passed, raster]);
+    for (const replacement of [
+      { ...native, results: undefined },
+      { ...native, exitCode: 1 },
+      { ...native, exitCode: null },
+      { ...native, results: [] },
+      { ...native, results: [{ ...raster, failed: 1 }] },
+      { ...native, results: [{ ...raster, skipped: 1 }] },
+      { ...native, results: [{ ...raster, todo: 1 }] },
+      { ...native, results: [passed, raster] },
+    ]) {
+      expect(() => requireVitestPartitions(expected, [core, replacement])).toThrow();
+    }
+    expect(() => requireVitestPartitions(expected, partitions.slice(0, 1))).toThrow(
+      'Missing test result',
+    );
+    expect(() =>
+      requireVitestPartitions(expected, [
+        { name: 'all', files: expected, results: [passed, raster], exitCode: 0 },
+        { ...native, results: undefined },
+      ]),
+    ).toThrow();
+    expect(() => requireVitestPartitions(expected, [core, native, native])).toThrow();
+    expect(() =>
+      requireVitestPartitions(expected, [
+        { ...core, exitCode: 1 },
+        { ...native, exitCode: 2 },
+      ]),
+    ).toThrow('core: 1, raster: 2');
+  });
+
   it('rejects missing, unexpected, duplicate, empty and incomplete suites', () => {
     expect(() => requireSuites([file], [passed])).not.toThrow();
     expect(() => requireSuites([], [])).toThrow('No test files');
