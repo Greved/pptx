@@ -193,7 +193,7 @@
     >
       <span class="num">{i + 1}{#if skippedSlides[i]}<span class="skip-mark" aria-label={t('Skipped during presentation')}>⊘</span>{/if}</span>
       <div class="thumb" style:aspect-ratio={size ? `${size.width} / ${size.height}` : '16 / 9'}>
-        {#if preview?.error}<span class="render-error" title={preview.error}>{t('Preview unavailable')}</span>{:else if preview}<div class="thumbnail-paint" use:svgPaint={preview.paint}></div>{/if}
+        {#if preview?.error}<span class="render-error" title={preview.error}>{t('Preview unavailable')}</span>{:else if preview}<div class="thumbnail-paint" inert aria-hidden="true" use:svgPaint={preview.paint}></div>{/if}
       </div>
     </div>
   {/each}

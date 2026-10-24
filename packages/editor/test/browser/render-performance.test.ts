@@ -252,6 +252,25 @@ test('large decks bound thumbnail SVGs while keeping keyboard rows and live canv
     `Expected a viewport of previews, got ${thumbnailCount}`,
   );
   await rows.first().focus();
+  assert.doesNotMatch(await rows.first().ariaSnapshot(), /Rich text slide/);
+  assert.equal(
+    await page
+      .locator('.nav .thumbnail-paint')
+      .first()
+      .evaluate((container) => {
+        const link = document.createElement('a');
+        link.href = 'https://example.com';
+        link.textContent = 'Decorative slide hyperlink';
+        container.append(link);
+        link.focus();
+        const root = container.getRootNode();
+        const receivedFocus = root instanceof ShadowRoot && root.activeElement === link;
+        link.remove();
+        return receivedFocus;
+      }),
+    false,
+    'Decorative preview links must not steal focus from the slide row',
+  );
   await page.keyboard.press('End');
   await page.locator('.nav [data-slide-index="59"] .thumb svg').waitFor();
   assert.equal(await rows.last().getAttribute('aria-current'), 'true');
