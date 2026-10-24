@@ -34,6 +34,7 @@ const GLOBAL_DEPENDENCIES = [CONTENT_TYPES, PRESENTATION, PRESENTATION_RELS, '/_
  * Tracking activates lazily on the first change capture, part metadata query or
  * render-dependency query. This performs one metadata pass to instrument existing
  * parts, which start at revision zero. Subsequent captures read only the journal.
+ * Bounds edits also activate tracking so deferred bytes invalidate revisions immediately.
  *
  * `[Content_Types].xml` changes use the virtual name `/[Content_Types].xml`.
  * Binary mutation inputs are copied; read-only byte views returned by inspection
@@ -48,16 +49,20 @@ export const capturePresentationChanges = (
 export interface PackagePartRevisionInfo {
   readonly name: string;
   readonly contentType: string;
-  /** `null` for the virtual content-types part, which is not serialized by this query. */
+  /** `null` when omitted or for the virtual content-types part. */
   readonly byteLength: number | null;
   /** Monotonic within this presentation instance; compare only for the same part. */
   readonly revision: number;
 }
 
-/** After one-time tracking setup, O(1) metadata lookup; does not read or serialize XML. */
+/**
+ * After one-time tracking setup, O(1) metadata lookup. Computing byteLength may
+ * materialize pending XML. Revision-only consumers can explicitly omit it.
+ */
 export const getPackagePartInfo = (
   pres: PresentationData,
   name: string,
+  options: { readonly includeByteLength?: boolean } = {},
 ): PackagePartRevisionInfo | null => {
   const pkg = pres[INTERNAL_PACKAGE];
   const journal = ensurePackageJournal(pkg);
@@ -75,7 +80,7 @@ export const getPackagePartInfo = (
     : {
         name: part.name,
         contentType: part.contentType,
-        byteLength: part.data.byteLength,
+        byteLength: options.includeByteLength === false ? null : part.data.byteLength,
         revision: journal.revisionOf(part.name),
       };
 };

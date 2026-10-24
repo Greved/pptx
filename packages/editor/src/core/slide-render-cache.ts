@@ -87,7 +87,7 @@ export function renderSlidePaintCached(pres: PresentationData, slide: SlideData)
   const revision = JSON.stringify(
     getSlideRenderDependencies(slide).map((name) => [
       name,
-      getPackagePartInfo(pres, name)?.revision,
+      getPackagePartInfo(pres, name, { includeByteLength: false })?.revision,
     ]),
   );
   return cache.preview(getSlidePartName(slide), revision, () =>

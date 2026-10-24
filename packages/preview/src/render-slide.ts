@@ -7540,7 +7540,10 @@ const renderSurface = (
       ? JSON.stringify({
           dependencies: getSlideRenderDependencies(slide)
             .filter((name) => name.toLowerCase() !== slidePart.toLowerCase())
-            .map((name) => [name, getPackagePartInfo(pres, name)?.revision]),
+            .map((name) => [
+              name,
+              getPackagePartInfo(pres, name, { includeByteLength: false })?.revision,
+            ]),
           width: W,
           height: H,
           colorMap: activeColorMap,

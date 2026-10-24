@@ -54,6 +54,7 @@ import {
 import {
   PRES_PART_NAME,
   commitAndRefresh,
+  commitSlideBounds,
   commitSlideData,
   decode,
   refreshSlideData,
@@ -821,7 +822,8 @@ export const shapesOverlap = (a: SlideShapeData, b: SlideShapeData): boolean => 
 export const setShapeBounds = (shape: SlideShapeData, bounds: ShapeBounds): void => {
   writePosition(shape[SHAPE_ELEMENT], shape[SHAPE_SNAPSHOT].kind, bounds.x, bounds.y);
   writeSize(shape[SHAPE_ELEMENT], shape[SHAPE_SNAPSHOT].kind, bounds.w, bounds.h);
-  commitAndRefresh(shape);
+  commitSlideBounds(shape[SHAPE_SLIDE]);
+  refreshSlideData(shape[SHAPE_SLIDE]);
 };
 
 /**

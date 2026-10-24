@@ -28,12 +28,24 @@ export const ensurePackageJournal = (pkg: OpcPackage): PackageMutationObserver =
   const existing = pkg.getMutationObserver();
   if (existing !== undefined) return existing;
   const journal = new PackageMutationJournal();
+  const deferred = new WeakMap<Part, (produce: () => Uint8Array) => void>();
   const observer: PackageMutationObserver = {
     capture: (previous) => journal.capture(previous),
     revisionOf: (name) => journal.revisionOf(name),
     changed: (name) => journal.record(name),
     removed: (name) => journal.recordRemoval(name),
-    observePart: (part) => observePart(part, () => journal.record(part.name)),
+    observePart: (part) => {
+      deferred.set(
+        part,
+        observePart(part, () => journal.record(part.name)),
+      );
+    },
+    deferPartData: (name, produce) => {
+      const part = pkg.getPart(name);
+      const replace = part === null ? undefined : deferred.get(part);
+      if (replace === undefined) throw new Error(`part missing: ${name}`);
+      replace(produce);
+    },
   };
   pkg.observeMutations(observer);
   const contentTypesChanged = (): void => journal.record('/[Content_Types].xml');
@@ -48,12 +60,16 @@ export const ensurePackageJournal = (pkg: OpcPackage): PackageMutationObserver =
   return observer;
 };
 
-const observePart = (part: Part, changed: () => void): void => {
-  let data = part.data;
+const observePart = (part: Part, changed: () => void): ((produce: () => Uint8Array) => void) => {
+  let data: Uint8Array | (() => Uint8Array) = part.data;
   let contentType = part.contentType;
   Object.defineProperties(part, {
     data: {
-      get: (): Uint8Array => data,
+      get: (): Uint8Array => {
+        // A failure retains the producer, never reports stale bytes as current.
+        if (typeof data === 'function') data = data();
+        return data;
+      },
       set(value: Uint8Array) {
         if (data === value) return;
         data = value;
@@ -69,6 +85,11 @@ const observePart = (part: Part, changed: () => void): void => {
       },
     },
   });
+  // One producer per owned part; replace it without evaluating earlier work.
+  return (produce) => {
+    data = produce;
+    changed();
+  };
 };
 
 /** Tracks writes rather than comparing serialized content, including writes later rolled back. */

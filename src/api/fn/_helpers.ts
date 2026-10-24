@@ -4,6 +4,7 @@
 // referenced from two or more split files is centralized here.
 
 import type { OpcPackage } from '../../internal/parts/index.ts';
+import { ensurePackageJournal } from '../../internal/parts/package-changes.ts';
 import {
   REL_TYPES,
   readSlideLayoutPart,
@@ -88,10 +89,29 @@ export const commitSlideData = (slide: SlideData): void => {
   writeSlideData(slide);
 };
 
+// Bounds changes leave shape identities/text untouched. Their XML bytes are
+// needed by package readers and saves, not by the live geometry renderer.
+export const commitSlideBounds = (slide: SlideData): void => {
+  const batch = slideMutationBatches.get(slide);
+  if (batch !== undefined) {
+    batch.dirty = true;
+    return;
+  }
+  ensurePackageJournal(slide[INTERNAL_PACKAGE]).deferPartData(slide[SLIDE_PART_NAME], () =>
+    encode(serializeXml(slide[SLIDE_DOCUMENT])),
+  );
+};
+
 export const runSlideMutationBatch = <T>(slide: SlideData, fn: () => T): T => {
   const existing = slideMutationBatches.get(slide);
   const batch = existing ?? { depth: 0, dirty: false };
-  if (existing === undefined) slideMutationBatches.set(slide, batch);
+  if (existing === undefined) {
+    // Reads inside a batch expose the last committed state. Materialize an
+    // earlier bounds edit before the batch begins changing its XML document.
+    const part = slide[INTERNAL_PACKAGE].getPart(slide[SLIDE_PART_NAME]);
+    if (part !== null) void part.data;
+    slideMutationBatches.set(slide, batch);
+  }
   batch.depth++;
   try {
     return fn();
